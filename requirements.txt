@@ -1,0 +1,10 @@
+torch
+torchvision
+torchinfo
+torchmetrics[detection]
+opencv-python
+hydra-core
+wandb
+tqdm
+albumentations
+faster-coco-eval

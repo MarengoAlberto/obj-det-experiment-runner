@@ -1,0 +1,7 @@
+train:
+  epochs: 2
+  batch_size_per_gpu: 16
+
+data:
+  train_size: 512
+  val_size: 128

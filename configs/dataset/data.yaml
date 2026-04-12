@@ -1,0 +1,12 @@
+train: ../Dataset/train/Vehicle registration plate
+val: ../Dataset/validation/Vehicle registration plate
+
+nc: 2
+names: ['__background__', 'Reg-plate']
+
+metadata:
+  workspace: alberto-marengo
+  project: licence-plate-detection
+  dataset: licence-plate-detection
+  version: 1
+  url: https://www.dropbox.com/s/k81ljpmzy3fgtx9/Dataset.zip?dl=1
