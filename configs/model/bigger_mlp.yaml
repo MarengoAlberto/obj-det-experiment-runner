@@ -1,3 +1,0 @@
-name: bigger_mlp
-hidden_dim: 256
-dropout: 0.2

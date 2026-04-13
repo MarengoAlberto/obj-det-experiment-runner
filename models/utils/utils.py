@@ -10,8 +10,9 @@ def load_model(model, model_folder: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found at: {path}")
     # Load trained model's state dict.
-    model.load_state_dict(torch.load(path))
-    return model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.load_state_dict(torch.load(path, map_location=device))
+    return model.to(device)
 
 def _direct_download_url(url: str) -> str:
     # Turn a Dropbox share link into a direct download URL

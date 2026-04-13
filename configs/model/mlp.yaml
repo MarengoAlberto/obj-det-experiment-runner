@@ -1,3 +1,11 @@
 name: mlp
-hidden_dim: 128
-dropout: 0.1
+image_size: [512, 512, 3]
+backbone_name: resnet101
+fpn_channels: 128
+num_anchors: 16
+
+nms_threshold: 0.55
+score_threshold: 0.05
+
+metadata:
+  best_model_folder: model

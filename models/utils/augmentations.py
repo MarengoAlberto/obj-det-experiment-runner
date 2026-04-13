@@ -64,3 +64,14 @@ def get_augmentations(height=300, width=300):
     )
 
     return train_transforms, valid_transforms
+
+
+def get_inference_transforms(height=300, width=300):
+    common_transforms = A.Compose(
+        [A.Resize(height=height, width=width, interpolation=4), Normalize(), ToTensorV2()],
+        bbox_params=A.BboxParams(format="pascal_voc",
+        min_visibility=0.01,            # drop boxes almost fully occluded
+        min_area=4.0,                   # drop tiny/degenerate boxes
+        check_each_transform=True)
+    )
+    return common_transforms

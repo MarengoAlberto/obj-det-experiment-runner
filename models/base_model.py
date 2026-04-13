@@ -4,42 +4,38 @@ import torch
 from torchinfo import summary
 
 from .trainer import Trainer
-from src import Detector, DataEncoder
-import utils
+from .src import Detector, DataEncoder
+from . import utils
 
 class Model:
 
     def __init__(self, cfg, load_model=True):
 
         # Initialize Logger
-        self.logger = utils.get_logger()
-
-        # Initialize Directories
-        cfg, current_version_name = utils.initialize_directory(cfg)
+        self.logger = utils.get_logger('my_yolo')
 
         # MODEL Initialization
-        if cfg.model == 'baseline':
-            self.model = Detector(backbone_name=cfg.backbone_name,
-                                  num_classes=cfg.num_classes,
-                                  fpn_channels=cfg.fpn_channels,
-                                  num_anchors=cfg.num_anchors,)
-            self.data_encoder = DataEncoder(input_size=cfg.image_size[:2], classes=cfg.classes)
+        if cfg.model.name == 'mlp':
+            self.model = Detector(backbone_name=cfg.model.backbone_name,
+                                  num_classes=len(cfg.dataset.names),
+                                  fpn_channels=cfg.model.fpn_channels,
+                                  num_anchors=cfg.model.num_anchors,)
+            self.data_encoder = DataEncoder(input_size=cfg.model.image_size[:2], classes=cfg.dataset.names)
             try:
                 if load_model:
-                    self.model = utils.load_model(cfg.model.best_model_folder)
+                    self.model = utils.load_model(self.model, cfg.model.metadata.best_model_folder)
             except FileNotFoundError as e:
-                self.logger.warning(f"Best model not found at {cfg.model.best_model_folder}. Starting with a new model.")
+                self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
         else:
-            raise NotImplementedError(f"Model {cfg.model} not implemented yet.")
-
+            raise NotImplementedError(f"Model {cfg.model.name} not implemented yet.")
         self.logger.info(summary(self.model,
-                                 input_size=(1,) + cfg.image_size[::-1],
+                                 input_size=(1,) + tuple(cfg.model.image_size)[::-1],
                                  row_settings=["var_names"]))
 
-        self.height = cfg.image_size[0]
-        self.width = cfg.image_size[1]
-        self.transforms = utils.get_augmentations(height=self.height, width=self.width)
-        self.classes = cfg.classes
+        self.height = cfg.model.image_size[0]
+        self.width = cfg.model.image_size[1]
+        self.transform = utils.get_inference_transforms(height=self.height, width=self.width)
+        self.classes = cfg.dataset.names
 
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,7 +50,7 @@ class Model:
         img = cv2.resize(orig_image_cpy, (self.width, self.height), cv2.INTER_CUBIC)
         img = np.ascontiguousarray(img)
 
-        trans_img = self.transforms[1](image=img)
+        trans_img = self.transform(image=img)
 
         # Rescale ratio
         imH, imW = orig_image.shape[:2]
@@ -63,20 +59,24 @@ class Model:
         ratio_h = imH / IMG_SIZE_H
         ratio_w = imW / IMG_SIZE_W
 
-        results = self.predict(trans_img)
+        results = self.predict(trans_img["image"])
 
         final_preds = []
         for pred in results['predictions']:
+            pred['image_array'] = orig_image
             pred['final_boxes'] = pred['boxes']
             pred['final_boxes'][:, [0, 2]] *= ratio_w
             pred['final_boxes'][:, [1, 3]] *= ratio_h
-            pred['final_boxes'] = pred['final_boxes'].squeeze(0).cpu().numpy()
-            pred['class_names'] = [self.classes[idx] for idx in pred['labels'].squeeze(0).cpu().numpy()]
+            pred['final_boxes'] = pred['final_boxes'].cpu().numpy().tolist()
+            pred['class_names'] = [self.classes[idx] for idx in pred['labels'].cpu().numpy().tolist()]
             final_preds.append(pred)
 
-        return final_preds
+        return final_preds[0]
 
     def train(self, data, n_epochs=None, batch_size=None, data_dir='dataset'):
+
+        # Initialize Directories
+        cfg, current_version_name = utils.initialize_directory(self.cfg)
 
         # Check if data is already downloaded and preprocessed, if not, do it.
         needs_download, url = utils.check_data_exists(data, data_dir)
@@ -93,8 +93,8 @@ class Model:
                 image_array,
                 y_true=None,
                 criterion=None,
-                nms_threshold=0.5,
-                score_threshold=0.5,
+                nms_threshold=None,
+                score_threshold=None,
                 device=None):
 
         loc_device = device or self.device
@@ -119,8 +119,8 @@ class Model:
                 prediction_data = self.data_encoder.decode(pred_boxes[idx],
                                                            pred_labels[idx],
                                                            loc_device,
-                                                           nms_threshold,
-                                                           score_threshold)
+                                                           nms_threshold=nms_threshold or self.cfg.model.nms_threshold,
+                                                           score_threshold=score_threshold or self.cfg.model.score_threshold)
                 pred_bbox = prediction_data[:, :4]
                 pred_conf = prediction_data[:, 4]
                 pred_cls_id = prediction_data[:, 5]

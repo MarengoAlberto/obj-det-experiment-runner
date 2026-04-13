@@ -9,8 +9,8 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from src import Loss
-from utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger
+from .src import Loss
+from .utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger
 
 class Trainer:
 

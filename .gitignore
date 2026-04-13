@@ -1,6 +1,7 @@
 outputs/
 model/
 dataset/
+samples/
 
 *.DS_Store
 *.log

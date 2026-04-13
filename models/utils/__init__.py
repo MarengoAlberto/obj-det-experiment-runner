@@ -1,5 +1,5 @@
 from .data import DataSetup
-from .augmentations import get_augmentations
+from .augmentations import get_augmentations, get_inference_transforms
 from .directory_setup import initialize_directory
 from .logger import get_logger
 from .optimizer import OptimizerSetup
