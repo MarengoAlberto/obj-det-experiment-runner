@@ -31,11 +31,9 @@ pip install -r requirements.txt
 ```bash
 python train.py   
 
-python train.py train.lr=0.0003 train.batch_size=128
+python train.py optimizer.lr=0.0003 experiment.train.batch_size=128
 
-python train.py +experiment=debug
-
-python train.py +experiment=big_run
+python train.py experiment=debug
 ```
 
 

@@ -9,14 +9,16 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from .src import Loss
-from .utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger
+from .base_trainer import BaseTrainer
+from ..src import Loss
+from ..utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger
 
-class Trainer:
+class Trainer(BaseTrainer):
 
     rank, world_size, local_rank = 0, 1, 0
     use_ddp = False
     checkpoint_dir = "checkpoints"
+    version = "version_0"
     train_loader = None
     val_loader = None
     train_sampler = None
@@ -45,9 +47,9 @@ class Trainer:
 
     def train(self, n_epochs=None, batch_size=None):
 
-        epochs = n_epochs or self.cfg.epochs
+        epochs = n_epochs or self.cfg.experiment.train.epochs
         if batch_size:
-            self.cfg.batch_size = batch_size
+            self.cfg.experiment.train.batch_size = batch_size
 
         # DATA LOADER Initialization
         data_class = DataSetup(self.cfg, self.data, self.use_ddp, self.rank, self.world_size)
@@ -99,7 +101,9 @@ class Trainer:
     def _initialize_trainer(self):
 
         # Initialize Directory
-        initialize_directory(self.cfg)
+        checkpoint_path, version = initialize_directory(self.cfg)
+        self.checkpoint_dir = Path(checkpoint_path)
+        self.version = version
 
         self.use_ddp = self.is_distributed()
 
@@ -110,7 +114,7 @@ class Trainer:
             self.rank, self.world_size, self.local_rank = 0, 1, 0
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.set_seed(self.cfg.train.seed + self.rank)
+        self.set_seed(self.cfg.experiment.train.seed + self.rank)
         self.logger.info(f"Using device: {self.device}, DDP: {self.use_ddp}, Rank: {self.rank}, World Size: {self.world_size}")
 
         # MODEL setup for DDP
@@ -129,11 +133,11 @@ class Trainer:
         self.logger.info(f'Criterion: {self.criterion}')
 
         # METRIC Initialization
-        self.metric = Metric(self.cfg)
+        self.metric = Metric(self.cfg, self.device)
         self.logger.info(f'Metric: {self.metric}')
 
         # Initialize WandB
-        if self.cfg.use_wandb:
+        if self.cfg.experiment.train.use_wandb:
             self.wandb = Wandb(self.cfg)
 
     def set_seed(self, seed: int):
@@ -255,8 +259,8 @@ class Trainer:
             cls_targets = torch.stack(batch_sample[4]).to(self.device)
 
             y_true = (box_targets, cls_targets)
-            nms_threshold = self.cfg.encoder.nms_threshold if self.model.data_encoder else None
-            score_threshold = self.cfg.encoder.score_threshold if self.model.data_encoder else None
+            nms_threshold = self.cfg.model.nms_threshold if self.model.data_encoder else None
+            score_threshold = self.cfg.model.score_threshold if self.model.data_encoder else None
             results = self.model.predict(image_batch,
                                          criterion=self.criterion,
                                          y_true=y_true,

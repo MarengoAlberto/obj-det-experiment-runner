@@ -1,9 +1,9 @@
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
 class Metric:
-    def __init__(self, cfg):
+    def __init__(self, cfg, device):
         if cfg.metric == 'torch_mAP':
-            self.metric = MeanAveragePrecision(class_metrics=True).to(cfg.device)
+            self.metric = MeanAveragePrecision(class_metrics=True).to(device)
         else:
             raise NotImplementedError(f"Metric {cfg.metric} not implemented yet.")
 

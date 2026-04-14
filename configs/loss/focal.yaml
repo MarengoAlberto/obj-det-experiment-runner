@@ -1,0 +1,4 @@
+name: focal
+loss_weight: 0.5
+alpha: 0.35
+gamma: 1.5

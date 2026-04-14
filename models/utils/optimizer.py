@@ -10,20 +10,20 @@ class OptimizerSetup:
         self.scheduler = None
 
     def get_optimizer(self):
-        if self.cfg.optimizer == 'adamw':
-            self.optimizer = optim.AdamW(self._make_param_groups(wd=self.cfg.wd),
-                                         lr=self.cfg.lr,
-                                         betas=(self.cfg.beta_min, self.cfg.beta_max),
-                                         eps=self.cfg.eps)
+        if self.cfg.optimizer.name == 'adamw':
+            self.optimizer = optim.AdamW(self._make_param_groups(wd=self.cfg.optimizer.weight_decay),
+                                         lr=self.cfg.optimizer.lr,
+                                         betas=(self.cfg.optimizer.beta_min, self.cfg.optimizer.beta_max),
+                                         eps=self.cfg.optimizer.eps)
         else:
             raise ValueError('Unknown optimizer')
-        if self.cfg.scheduler == "cosine_warmup":
+        if self.cfg.scheduler.name == "cosine_warmup":
             self.scheduler =self._build_cosine_warmup(self.optimizer,
-                                                      self.cfg.epochs,
-                                                      self.cfg.warmup_epochs,
-                                                      self.cfg.min_lr_ratio)
+                                                      self.cfg.experiment.train.epochs,
+                                                      self.cfg.scheduler.warmup_epochs,
+                                                      self.cfg.scheduler.min_lr_ratio)
         else:
-            print(f"Unsupported scheduler: {self.cfg.scheduler}. No scheduler will be used.")
+            print(f"Unsupported scheduler: {self.cfg.scheduler.name}. No scheduler will be used.")
         return self.optimizer, self.scheduler
 
     def _build_cosine_warmup(self,

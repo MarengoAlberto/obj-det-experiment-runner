@@ -1,3 +1,7 @@
 train:
-  epochs: 10
-  batch_size_per_gpu: 64
+  debug: true
+  use_wandb: true
+  epochs: 200
+  batch_size: 32
+  seed: 42
+  num_workers: 4

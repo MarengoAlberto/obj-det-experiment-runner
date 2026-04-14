@@ -1,30 +1,24 @@
 defaults:
-  - model: mlp
-  - optimizer: adam
+  - model: fpn
+  - optimizer: adamw
+  - scheduler: cosine_warmup
   - dataset: data
+  - experiment: baseline
+  - loss@loss.loc_loss: iou
+  - loss@loss.cls_loss: focal
   - _self_
 
 project:
   name: ddp-hydra-wandb-demo
 
-train:
-  epochs: 5
-  batch_size: 64
-  lr: 0.001
-  seed: 42
-  num_workers: 2
-
-data:
-  input_dim: 128
-  num_classes: 10
-  train_size: 5000
-  val_size: 1000
+metric: torch_mAP
 
 logging:
   log_every_steps: 20
 
 checkpoint:
   dir: checkpoints
+  version: version_0
 
 hydra:
   run:

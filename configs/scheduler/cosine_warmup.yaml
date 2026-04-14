@@ -1,0 +1,3 @@
+name: cosine_warmup
+warmup_epochs: 1
+min_lr_ratio: 0.01

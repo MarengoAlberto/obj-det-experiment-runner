@@ -1,0 +1,4 @@
+name: IoU
+loss_weight: 15.0
+iou_type: ciou
+eps: 1e-7

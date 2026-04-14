@@ -17,37 +17,37 @@ class DataSetup:
         self.use_ddp = use_ddp
         self.rank = rank
         self.world_size = world_size
-        self.image_size = cfg.image_size
-        self.height = cfg.image_size[0]
-        self.width = cfg.image_size[1]
-        self.classes = cfg.classes
+        self.image_size = cfg.model.image_size
+        self.height = self.image_size[0]
+        self.width = self.image_size[1]
+        self.classes = cfg.dataset.names
 
     def get_loaders(self, _batch_size):
 
-        batch_size = _batch_size if _batch_size else self.cfg.batch_size
-        # TODO: Below data will be the YAML file, need to extract the root_dir from it.
-        root_dir = self.data.root_dir
-        num_workers = self.cfg.num_workers
+        batch_size = _batch_size if _batch_size else self.cfg.experiment.train.batch_size
+        train_path = self.cfg.dataset.full_train_path
+        val_path = self.cfg.dataset.full_val_path
+        num_workers = self.cfg.experiment.train.num_workers
 
         train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width)
 
         # Create custom datasets.
         train_dataset = PlateDataset(
-            root_dir=root_dir,
+            data_path=train_path,
             transform=train_augmentations,
             classes=self.classes,
             input_size=self.image_size,
             is_train=True,
-            debug=self.cfg.debug,
+            debug=self.cfg.experiment.train.debug,
         )
 
         valid_dataset = PlateDataset(
-            root_dir=root_dir,
+            data_path=val_path,
             transform=valid_augmentations,
             classes=self.classes,
             input_size=self.image_size,
             is_train=False,
-            debug=self.cfg.debug,
+            debug=self.cfg.experiment.train.debug,
         )
 
         if self.use_ddp:
@@ -88,21 +88,21 @@ class DataSetup:
 class PlateDataset(Dataset):
     def __init__(
         self,
-        root_dir,
+        data_path,
         classes,
         transform=None,
         is_train=True,
         input_size=(300, 300, 3),
         debug=False
     ):
-        self.root_dir = os.path.expanduser(root_dir)
+        self.data_path = os.path.expanduser(data_path)
         self.classes = classes
         self.transforms = transform
         self.input_size = input_size
         self.is_train = is_train
         self.encoder = DataEncoder(self.input_size[:2], self.classes)
 
-        self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(root_dir, train=is_train, shuffle=is_train, debug=debug)
+        self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path, train=is_train, shuffle=is_train, debug=debug)
 
     def __len__(self):
         # Get size of the Dataset.
@@ -160,23 +160,21 @@ def list_files_in_directory(directory_path):
         print(f"Error: Directory '{directory_path}' not found.")
         return []
 
-def load_groundtruths(root_path, train=True, shuffle=True, debug=False):
+def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
     image_paths = []
     boxes = []
     labels = []
 
-    folder = 'train' if train else 'validation'
-    directory = os.path.join(root_path, folder, 'Vehicle registration plate')
-    file_names = list_files_in_directory(directory)
+    file_names = list_files_in_directory(data_path)
     num_samples = len(file_names)
     for image_name in file_names:
         image_id, _ = os.path.splitext(os.path.basename(image_name))
-        filepath = os.path.join(root_path, folder, 'Vehicle registration plate', 'label', image_id+'.txt')
+        filepath = os.path.join(data_path, 'label', image_id+'.txt')
 
         with open(filepath) as f:
             lines = f.readlines()
 
-        image_paths.append(os.path.join(directory, image_name))
+        image_paths.append(os.path.join(data_path, image_name))
         box = []
         label = []
 
@@ -193,7 +191,7 @@ def load_groundtruths(root_path, train=True, shuffle=True, debug=False):
         boxes.append(box)
         labels.append(label)
 
-    print(f"Total {num_samples} images and {len(boxes)} boxes loaded from: {os.path.relpath(directory, os.getcwd())}")
+    print(f"Total {num_samples} images and {len(boxes)} boxes loaded from: {os.path.relpath(data_path, os.getcwd())}")
 
     # Shuffle or Sort
     if shuffle:

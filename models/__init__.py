@@ -1,1 +1,1 @@
-from .base_model import Model
+from .model_wrapper import Model

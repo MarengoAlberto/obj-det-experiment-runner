@@ -6,11 +6,11 @@ import torch.nn.functional as F
 class Loss:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.loc_wt = cfg.loss.loc_wt
-        self.cls_wt = cfg.loss.cls_wt
+        self.loc_wt = cfg.loss.loc_loss.loss_weight
+        self.cls_wt = cfg.loss.cls_loss.loss_weight
         self.loss_fn = {
-            "loc_loss": self.get_loc_loss_fn(cfg.loss.loc_loss),
-            "cls_loss": self.get_cls_loss_fn(cfg.loss.cls_loss)
+            "loc_loss": self.get_loc_loss_fn(cfg.loss.loc_loss.name),
+            "cls_loss": self.get_cls_loss_fn(cfg.loss.cls_loss.name)
         }
 
     def __call__(self, y_true, y_pred):
@@ -25,13 +25,15 @@ class Loss:
         if loc_loss == "smooth_l1":
             return torch.nn.SmoothL1Loss(reduction="mean")
         elif loc_loss == "IoU":
-            return IoULoss()
+            return IoULoss(iou_type=self.cfg.loss.loc_loss.iou_type, eps=self.cfg.loss.loc_loss.eps)
         else:
             raise NotImplementedError(f"Localization loss {loc_loss} not implemented yet.")
 
     def get_cls_loss_fn(self, cls_loss):
         if cls_loss == "focal":
-            return FocalLoss()
+            return FocalLoss(num_classes=self.cfg.loss.dataset.nc,
+                             alpha=self.cfg.loss.cls_loss.alpha,
+                             gamma=self.cfg.loss.cls_loss.gamma)
         elif cls_loss == "ohem":
             return OHEMLoss()
         else:

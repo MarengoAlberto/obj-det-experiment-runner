@@ -100,4 +100,6 @@ def check_data_exists(data_path: str, data_dir: str = 'dataset'):
     val_folder = os.path.join(data_dir, data['val'].replace('../', ''))
     if os.path.isdir(train_folder) and os.listdir(val_folder):
         needs_download = False
-    return needs_download, url
+    data['full_train_path'] = train_folder
+    data['full_val_path'] = val_folder
+    return needs_download, url, data
