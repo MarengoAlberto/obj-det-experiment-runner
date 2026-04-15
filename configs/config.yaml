@@ -3,7 +3,7 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine_warmup
   - dataset: data
-  - experiment: baseline
+  - experiment: debug
   - loss@loss.loc_loss: iou
   - loss@loss.cls_loss: focal
   - _self_

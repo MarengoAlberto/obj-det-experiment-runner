@@ -14,7 +14,7 @@ class Loss:
         }
 
     def __call__(self, y_true, y_pred):
-        pred_boxes, pred_labels = y_pred.copy()
+        pred_boxes, pred_labels = y_pred
         box_targets, cls_targets = y_true
         loc_loss = self.loss_fn["loc_loss"](pred_boxes, box_targets, cls_targets)
         cls_loss = self.loss_fn["cls_loss"](pred_labels, cls_targets)
@@ -31,7 +31,7 @@ class Loss:
 
     def get_cls_loss_fn(self, cls_loss):
         if cls_loss == "focal":
-            return FocalLoss(num_classes=self.cfg.loss.dataset.nc,
+            return FocalLoss(num_classes=self.cfg.dataset.nc,
                              alpha=self.cfg.loss.cls_loss.alpha,
                              gamma=self.cfg.loss.cls_loss.gamma)
         elif cls_loss == "ohem":

@@ -35,9 +35,11 @@ class FPNModel(BaseModel):
         self.width = cfg.model.image_size[1]
         self.transform = utils.get_inference_transforms(height=self.height, width=self.width)
         self.classes = cfg.dataset.names
+        self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
 
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.logger.info(f"Using device: {self.device}")
 
     def __call__(self, image_path, *args, **kwargs):
 
@@ -74,16 +76,15 @@ class FPNModel(BaseModel):
 
     def train(self, data, n_epochs=None, batch_size=None, data_dir='dataset'):
 
-        # Initialize Directories
-        cfg, current_version_name = utils.initialize_directory(self.cfg)
-
         # Check if data is already downloaded and preprocessed, if not, do it.
         needs_download, url, data_yaml = utils.check_data_exists(data, data_dir)
+        self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
+            self.logger.info(f"Downloading data from {url}")
             utils.download_and_unzip_zip(url, data_dir)
 
         # Initialize Trainer
-        trainer = Trainer(self.model, data_yaml, self.cfg, logger=self.logger)
+        trainer = Trainer(self, data_yaml, self.cfg, logger=self.logger)
         # Start Training
         history = trainer.train(n_epochs=n_epochs, batch_size=batch_size)
         return history
@@ -97,7 +98,9 @@ class FPNModel(BaseModel):
                 device=None):
 
         loc_device = device or self.device
-        image_batch = image_array.unsqueeze(0).to(loc_device)
+        if image_array.ndim == 3:
+            image_array = image_array.unsqueeze(0)
+        image_batch = image_array.to(loc_device)
         self.model.eval()
         self.model = self.model.to(loc_device)
 

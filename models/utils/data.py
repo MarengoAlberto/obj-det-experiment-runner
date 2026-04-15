@@ -25,8 +25,8 @@ class DataSetup:
     def get_loaders(self, _batch_size):
 
         batch_size = _batch_size if _batch_size else self.cfg.experiment.train.batch_size
-        train_path = self.cfg.dataset.full_train_path
-        val_path = self.cfg.dataset.full_val_path
+        train_path = self.data.full_train_path
+        val_path = self.data.full_val_path
         num_workers = self.cfg.experiment.train.num_workers
 
         train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width)
@@ -209,10 +209,10 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
         if train:
             num_samples = 100
         else:
-            mum_samples = 10
+            num_samples = 10
         print(f"Debug mode enabled: Only using {num_samples} samples for set: {'train' if train else 'validation'}")
-        image_paths = image_paths[:mum_samples]
-        boxes = boxes[:mum_samples]
-        labels = labels[:mum_samples]
+        image_paths = image_paths[:num_samples]
+        boxes = boxes[:num_samples]
+        labels = labels[:num_samples]
 
     return image_paths, boxes, labels, num_samples

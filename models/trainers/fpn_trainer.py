@@ -29,12 +29,14 @@ class Trainer(BaseTrainer):
     metric = None
     wandb = None
     device = None
-    history = {"epoch": [], "train_loss": [], "test_loss": [],
+    history = {"epoch": [], "train_loss": [], "val_loss": [],
                "val_mAP": [], "val_mAP@50": []}
 
-    def __init__(self, model, data, cfg, logger=None):
+    def __init__(self, wrapper, data, cfg, logger=None):
 
-        self.model = model
+        self.wrapper = wrapper
+        self.model = wrapper.model
+        self.data_encoder = wrapper.data_encoder
         self.cfg = cfg
         self.data = data
 
@@ -51,15 +53,25 @@ class Trainer(BaseTrainer):
         if batch_size:
             self.cfg.experiment.train.batch_size = batch_size
 
+        self.logger.info(f"Training Configuration: Epochs: {epochs}, Batch Size: {self.cfg.experiment.train.batch_size}")
+
+        self.logger.info("Start training...")
+
         # DATA LOADER Initialization
         data_class = DataSetup(self.cfg, self.data, self.use_ddp, self.rank, self.world_size)
         self.train_loader, self.val_loader, self.train_sampler, self.val_sampler = data_class.get_loaders(batch_size)
 
+        self.logger.info(f"Train Loader size: {len(self.train_loader.dataset)}, Val Loader size: {len(self.val_loader.dataset)}")
+        self.logger.info(f"Train Loader: {len(self.train_loader)}, Val Loader: {len(self.val_loader)}")
+
         output_path = os.path.join(self.checkpoint_dir, self.model.__class__.__name__) + '_train.pth'
         iterator = tqdm(range(epochs), dynamic_ncols=True)
 
+        self.logger.info(f"Saving checkpoint: {output_path}")
+
         if self.is_main_process(self.rank):
-            self.wandb.init()
+            if self.wandb:
+                self.wandb.init()
 
         for epoch in iterator:
 
@@ -70,12 +82,13 @@ class Trainer(BaseTrainer):
             output_val = self._validation_step()
 
             if self.is_main_process(self.rank):
-                self.wandb.log(output_train, output_val)
+                if self.wandb:
+                    self.wandb.log(output_train, output_val)
                 self.history["epoch"].append(epoch)
-                self.history["train_loss"].append(output_train["total_loss"])
-                self.history["test_loss"].append(output_val["total_loss"])
-                self.history["val_mAP"].append(output_val["metrics"]["map"].numpy())
-                self.history["val_mAP@50"].append(output_val["metrics"]["map_50"].numpy())
+                self.history["train_loss"].append(output_train["total_loss"].item())
+                self.history["val_loss"].append(output_val["total_loss"].item())
+                self.history["val_mAP"].append(output_val["metrics"]["map"].numpy().item())
+                self.history["val_mAP@50"].append(output_val["metrics"]["map_50"].numpy().item())
 
                 self._end_epoch_verbose(iterator, epoch, output_train, output_val)
 
@@ -91,7 +104,8 @@ class Trainer(BaseTrainer):
                 self.scheduler.step()
 
         if self.is_main_process(self.rank):
-            self.wandb.finish()
+            if self.wandb:
+                self.wandb.finish()
 
         if self.use_ddp:
             self.cleanup_ddp()
@@ -104,6 +118,9 @@ class Trainer(BaseTrainer):
         checkpoint_path, version = initialize_directory(self.cfg)
         self.checkpoint_dir = Path(checkpoint_path)
         self.version = version
+
+        self.logger.info(f"Checkpoint Directory: {self.checkpoint_dir}")
+        self.logger.info(f"Version: {self.version}")
 
         self.use_ddp = self.is_distributed()
 
@@ -187,7 +204,7 @@ class Trainer(BaseTrainer):
         test_loss = output_test["total_loss"]
 
         iterator.set_description(
-            f"epoch: {epoch}, val_mAP@50: {val_map_50:.3f}, train_loss: {train_loss:.3f}, test_loss: {test_loss:.3f}"
+            f"epoch: {epoch+1}, val_mAP@50: {val_map_50:.3f}, train_loss: {train_loss:.3f}, test_loss: {test_loss:.3f}"
         )
 
     def _train_step(self):
@@ -210,11 +227,7 @@ class Trainer(BaseTrainer):
             pred = (pred_boxes, pred_labels)
             y_true = (box_targets, cls_targets)
             loss = self.criterion(y_true, pred)
-
-            loc_loss = loss["loc_loss"].item()
-            cls_loss = loss["cls_loss"].item()
-            total_loss = loss["total_loss"].item()
-
+            total_loss = loss["total_loss"]
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
@@ -222,6 +235,9 @@ class Trainer(BaseTrainer):
 
             optimizer_lr = self.optimizer.param_groups[0]["lr"]
 
+            loc_loss = loss["loc_loss"].item()
+            cls_loss = loss["cls_loss"].item()
+            total_loss = total_loss.item()
             if self.use_ddp:
                 loc_loss = self.reduce_mean(loc_loss, self.device, self.world_size)
                 cls_loss = self.reduce_mean(cls_loss, self.device, self.world_size)
@@ -231,7 +247,7 @@ class Trainer(BaseTrainer):
             loc_loss_avg.append(cls_loss)
             total_loss_avg.append(total_loss)
 
-            status = f"[Train][{i}] Total Loss: {np.mean(total_loss_avg):.4f}, "
+            status = f"[Train][{i+1}] Total Loss: {np.mean(total_loss_avg):.4f}, "
             status += f"Loc Loss: {np.mean(loc_loss_avg):.4f}, Cls Loss: {np.mean(cls_loss_avg):.4f}, "
             status += f"LR: {optimizer_lr:.3f}"
 
@@ -244,7 +260,7 @@ class Trainer(BaseTrainer):
 
         self.model.eval()
 
-        iterator = tqdm(self.train_loader, dynamic_ncols=True)
+        iterator = tqdm(self.val_loader, dynamic_ncols=True)
 
         cls_loss_avg = []
         loc_loss_avg = []
@@ -259,9 +275,9 @@ class Trainer(BaseTrainer):
             cls_targets = torch.stack(batch_sample[4]).to(self.device)
 
             y_true = (box_targets, cls_targets)
-            nms_threshold = self.cfg.model.nms_threshold if self.model.data_encoder else None
-            score_threshold = self.cfg.model.score_threshold if self.model.data_encoder else None
-            results = self.model.predict(image_batch,
+            nms_threshold = self.cfg.model.nms_threshold if self.data_encoder else None
+            score_threshold = self.cfg.model.score_threshold if self.data_encoder else None
+            results = self.wrapper.predict(image_batch,
                                          criterion=self.criterion,
                                          y_true=y_true,
                                          device=self.device,
@@ -297,7 +313,7 @@ class Trainer(BaseTrainer):
 
             self.metric.update(predictions, targets)
 
-            status = f"[Test][{i}] Total Loss: {np.mean(total_loss_avg):.4f}, "
+            status = f"[Validation][{i+1}] Total Loss: {np.mean(total_loss_avg):.4f}, "
             status += f"Loc Loss: {np.mean(loc_loss_avg):.4f}, Cls Loss: {np.mean(cls_loss_avg):.4f}, "
 
             iterator.set_description(status)

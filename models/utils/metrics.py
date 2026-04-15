@@ -7,7 +7,7 @@ class Metric:
         else:
             raise NotImplementedError(f"Metric {cfg.metric} not implemented yet.")
 
-    def update(self, y_true, y_pred):
+    def update(self, y_pred, y_true):
         return self.metric(y_pred, y_true)
 
     def compute(self):

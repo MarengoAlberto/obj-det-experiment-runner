@@ -9,3 +9,5 @@ tqdm
 albumentations
 faster-coco-eval
 matplotlib
+python-box
+pyyaml

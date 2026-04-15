@@ -4,6 +4,7 @@ import torch
 import requests
 import zipfile
 from typing import Union
+from box import Box
 
 def load_model(model, model_folder: str):
     path = os.path.join(model_folder, "my_yolo.pth")
@@ -102,4 +103,4 @@ def check_data_exists(data_path: str, data_dir: str = 'dataset'):
         needs_download = False
     data['full_train_path'] = train_folder
     data['full_val_path'] = val_folder
-    return needs_download, url, data
+    return needs_download, url, Box(data)
