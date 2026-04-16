@@ -3,6 +3,7 @@ trained_model/
 dataset/
 samples/
 checkpoints/
+wandb/
 
 *.DS_Store
 *.log

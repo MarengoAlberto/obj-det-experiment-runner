@@ -1,10 +1,13 @@
 import os
 import yaml
 import torch
+import numbers
+import numpy as np
 import requests
 import zipfile
 from typing import Union
 from box import Box
+from collections.abc import Mapping
 
 def load_model(model, model_folder: str, model_name: str = "my_yolo"):
     path = os.path.join(model_folder, f"{model_name}.pth")
@@ -15,7 +18,7 @@ def load_model(model, model_folder: str, model_name: str = "my_yolo"):
     try:
         checkpoint = torch.load(path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
-        start_epoch = checkpoint["epoch"] + 1
+        start_epoch = checkpoint["epoch"]
     except:
         model.load_state_dict(torch.load(path, map_location=device))
         start_epoch = 0
@@ -115,3 +118,56 @@ def get_val_yaml_file_path(data_path):
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Data not found at: {data_path}")
     return Box({"full_val_path": data_path})
+
+def to_python_number(value):
+    """Convert common tensor/NumPy scalar types to plain Python numbers."""
+    if isinstance(value, numbers.Number):
+        return value
+
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(f"Expected scalar tensor, got shape {tuple(value.shape)}")
+        return value.detach().cpu().item()
+
+    if isinstance(value, np.generic):
+        return value.item()
+
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            raise ValueError(f"Expected scalar ndarray, got shape {value.shape}")
+        return value.item()
+
+    raise TypeError(f"Unsupported metric value type: {type(value)}")
+
+def merge_metric_dicts(*dicts: Mapping, prefix_conflicts: bool = False) -> dict[str, float]:
+    """
+    Merge multiple metric dicts and convert values to plain Python numbers.
+
+    Args:
+        *dicts: Metric dictionaries.
+        prefix_conflicts: If True, later duplicate keys are allowed only if
+            you pre-prefix keys yourself before calling this. Otherwise duplicates error.
+
+    Returns:
+        Flat dict with Python scalar values.
+    """
+    merged: dict[str, float] = {}
+
+    for metric_dict in dicts:
+        for key, value in metric_dict.items():
+            if isinstance(value, dict):
+                continue
+            if not isinstance(key, str):
+                key = str(key)
+
+            if key in merged and not prefix_conflicts:
+                raise KeyError(f"Duplicate metric key: {key}")
+            num_value = to_python_number(value)
+            if num_value is not None:
+                merged[key] = num_value
+
+    return merged
+
+def refactor_dict(d: dict, prefix: str) -> dict:
+    """Add a prefix to all keys in the dictionary."""
+    return {f"{prefix}_{k}": v for k, v in d.items()}

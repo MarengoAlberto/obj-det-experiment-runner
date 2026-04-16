@@ -9,13 +9,9 @@ defaults:
   - _self_
 
 project:
-  name: ddp-fpn-v1
-  entity: ddp-experiment
+  name: ddp-obj-det-v1
 
 metric: torch_mAP
-
-logging:
-  log_every_steps: 20
 
 checkpoint:
   dir: checkpoints

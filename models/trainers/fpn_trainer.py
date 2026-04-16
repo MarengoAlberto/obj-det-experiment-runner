@@ -32,13 +32,14 @@ class Trainer(BaseTrainer):
     history = {"epoch": [], "train_loss": [], "val_loss": [],
                "val_mAP": [], "val_mAP@50": []}
 
-    def __init__(self, wrapper, data, cfg, logger=None):
+    def __init__(self, wrapper, data, cfg, logger=None, close_when_done=False):
 
         self.wrapper = wrapper
         self.model = wrapper.model
         self.data_encoder = wrapper.data_encoder
         self.cfg = cfg
         self.data = data
+        self.close_when_done = close_when_done
 
         # Initialize Logger
         self.logger = logger if logger else get_logger()
@@ -83,7 +84,9 @@ class Trainer(BaseTrainer):
 
             if self.is_main_process(self.rank):
                 if self.wandb:
-                    self.wandb.log(output_train, output_val, epoch)
+                    self.wandb.log({"output_train": output_train,
+                                    "output_val":output_val,
+                                    "epoch": epoch})
                 self.history["epoch"].append(epoch)
                 self.history["train_loss"].append(output_train["total_loss"].item())
                 self.history["val_loss"].append(output_val["total_loss"].item())
@@ -105,7 +108,8 @@ class Trainer(BaseTrainer):
 
         if self.is_main_process(self.rank):
             if self.wandb:
-                self.wandb.finish()
+                if self.wandb.close_when_done:
+                    self.wandb.finish()
 
         if self.use_ddp:
             self.cleanup_ddp()
@@ -155,7 +159,8 @@ class Trainer(BaseTrainer):
 
         # Initialize WandB
         if self.cfg.experiment.train.use_wandb:
-            self.wandb = Wandb(self.cfg, self.logger)
+            self.wandb = Wandb(self.cfg, self.logger, close_when_done=self.close_when_done)
+            self.logger.info("Initialized Weights & Biases for logging.")
 
     def set_seed(self, seed: int):
         random.seed(seed)

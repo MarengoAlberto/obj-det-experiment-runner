@@ -77,7 +77,7 @@ class FPNModel(BaseModel):
 
         return final_preds[0]
 
-    def train(self, data, n_epochs=None, batch_size=None, data_dir='dataset'):
+    def train(self, data, n_epochs=None, batch_size=None, data_dir='dataset', coco_eval=True):
 
         # Check if data is already downloaded and preprocessed, if not, do it.
         needs_download, url, data_yaml = utils.check_data_exists(data, data_dir)
@@ -87,10 +87,19 @@ class FPNModel(BaseModel):
             utils.download_and_unzip_zip(url, data_dir)
 
         # Initialize Trainer
-        trainer = Trainer(self, data_yaml, self.cfg, logger=self.logger)
+        trainer = Trainer(self, data_yaml, self.cfg, logger=self.logger, close_when_done=(not coco_eval))
         # Start Training
         history = trainer.train(n_epochs=n_epochs, batch_size=batch_size, start_epoch=self.start_epoch)
-        return history
+        coco_eval_results = None
+        if coco_eval:
+            coco_eval_results = self.evaluate(self.cfg.dataset.val.replace('..', data_dir))
+            if trainer.wandb:
+                trainer.wandb.log({'coco_eval_results': coco_eval_results})
+                trainer.wandb.finish()
+        return {
+            "history": history,
+            "coco_eval_results": coco_eval_results
+        }
 
     def predict(self,
                 image_array,
