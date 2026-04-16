@@ -32,23 +32,9 @@ class DataSetup:
         train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width)
 
         # Create custom datasets.
-        train_dataset = PlateDataset(
-            data_path=train_path,
-            transform=train_augmentations,
-            classes=self.classes,
-            input_size=self.image_size,
-            is_train=True,
-            debug=self.cfg.experiment.train.debug,
-        )
+        train_dataset = self.get_dataset(train_path, train_augmentations, train=True)
 
-        valid_dataset = PlateDataset(
-            data_path=val_path,
-            transform=valid_augmentations,
-            classes=self.classes,
-            input_size=self.image_size,
-            is_train=False,
-            debug=self.cfg.experiment.train.debug,
-        )
+        valid_dataset = self.get_dataset(val_path, valid_augmentations, train=False)
 
         if self.use_ddp:
             train_sampler = DistributedSampler(
@@ -85,7 +71,43 @@ class DataSetup:
 
         return train_loader, valid_loader, train_sampler, val_sampler
 
-class PlateDataset(Dataset):
+    def get_one_loader(self, _batch_size):
+
+        batch_size = _batch_size if _batch_size else self.cfg.experiment.train.batch_size
+        path = self.data.full_val_path
+        num_workers = self.cfg.experiment.train.num_workers
+
+        _, valid_augmentations = get_augmentations(height=self.height, width=self.width)
+
+        # Create custom dataset.
+        dataset = self.get_dataset(path, valid_augmentations, train=False)
+
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=dataset.collate_fn,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+
+        return loader
+
+    def get_dataset(self, path, trasform_function, train=True):
+        if self.cfg.model.name == "fpn":
+            dataset = FPNDataset(
+                data_path=path,
+                transform=trasform_function,
+                classes=self.classes,
+                input_size=self.image_size,
+                is_train=train,
+                debug=self.cfg.experiment.train.debug,
+            )
+        else:
+             raise ValueError(f"Unknown model_type: {self.cfg.model.name}")
+        return dataset
+
+class FPNDataset(Dataset):
     def __init__(
         self,
         data_path,
@@ -115,6 +137,9 @@ class PlateDataset(Dataset):
         indexed_labels = self.labels[idx]
 
         img = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
+
+        height = img.shape[0]
+        width = img.shape[1]
 
         if self.transforms:
             transformed = self.transforms(image=img, bboxes=indexed_boxes, category_ids=indexed_labels)
@@ -146,7 +171,9 @@ class PlateDataset(Dataset):
 
         loc_target, cls_target = self.encoder.encode(transformed_boxes, transformed_labels)
 
-        return transformed_img, transformed_boxes, transformed_labels, loc_target, cls_target
+        original_size = torch.tensor((height, width), dtype=torch.int)
+
+        return transformed_img, transformed_boxes, transformed_labels, loc_target, cls_target, original_size
 
     def collate_fn(self, batch):
         return list(zip(*batch))

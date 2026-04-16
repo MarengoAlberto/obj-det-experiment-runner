@@ -1,3 +1,4 @@
 defaults:
-  - model: fpn
+  - model: trained_fpn
   - dataset: data
+  - experiment: baseline

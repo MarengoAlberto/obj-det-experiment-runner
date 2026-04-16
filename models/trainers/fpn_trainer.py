@@ -47,7 +47,7 @@ class Trainer(BaseTrainer):
         self._initialize_trainer()
 
 
-    def train(self, n_epochs=None, batch_size=None):
+    def train(self, n_epochs=None, batch_size=None, start_epoch=0):
 
         epochs = n_epochs or self.cfg.experiment.train.epochs
         if batch_size:
@@ -65,7 +65,7 @@ class Trainer(BaseTrainer):
         self.logger.info(f"Train Loader: {len(self.train_loader)}, Val Loader: {len(self.val_loader)}")
 
         output_path = os.path.join(self.checkpoint_dir, self.model.__class__.__name__) + '_train.pth'
-        iterator = tqdm(range(epochs), dynamic_ncols=True)
+        iterator = tqdm(range(start_epoch, epochs + start_epoch), dynamic_ncols=True)
 
         self.logger.info(f"Saving checkpoint: {output_path}")
 
@@ -83,7 +83,7 @@ class Trainer(BaseTrainer):
 
             if self.is_main_process(self.rank):
                 if self.wandb:
-                    self.wandb.log(output_train, output_val)
+                    self.wandb.log(output_train, output_val, epoch)
                 self.history["epoch"].append(epoch)
                 self.history["train_loss"].append(output_train["total_loss"].item())
                 self.history["val_loss"].append(output_val["total_loss"].item())
@@ -155,7 +155,7 @@ class Trainer(BaseTrainer):
 
         # Initialize WandB
         if self.cfg.experiment.train.use_wandb:
-            self.wandb = Wandb(self.cfg)
+            self.wandb = Wandb(self.cfg, self.logger)
 
     def set_seed(self, seed: int):
         random.seed(seed)

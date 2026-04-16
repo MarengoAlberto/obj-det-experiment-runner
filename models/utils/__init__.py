@@ -5,4 +5,5 @@ from .logger import get_logger
 from .optimizer import OptimizerSetup
 from .metrics import Metric
 from .wandb import Wandb
-from .utils import download_and_unzip_zip, check_data_exists, load_model
+from .utils import download_and_unzip_zip, check_data_exists, load_model, get_val_yaml_file_path
+from .coco_evaluate import coco_eval

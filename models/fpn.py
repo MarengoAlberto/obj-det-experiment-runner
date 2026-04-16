@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 from torchinfo import summary
 
 from .base_model import BaseModel
@@ -10,7 +11,9 @@ from . import utils
 
 class FPNModel(BaseModel):
 
-    def __init__(self, cfg, load_model=True):
+    start_epoch = 0
+
+    def __init__(self, cfg, load_model=True, *args, **kwargs):
 
         # Initialize Logger
         self.logger = utils.get_logger('fpn')
@@ -23,7 +26,7 @@ class FPNModel(BaseModel):
         self.data_encoder = DataEncoder(input_size=cfg.model.image_size[:2], classes=cfg.dataset.names)
         try:
             if load_model:
-                self.model = utils.load_model(self.model, cfg.model.metadata.best_model_folder)
+                self.model, self.start_epoch = utils.load_model(self.model, cfg.model.metadata.best_model_folder, *args, **kwargs)
         except FileNotFoundError as e:
             self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
 
@@ -86,7 +89,7 @@ class FPNModel(BaseModel):
         # Initialize Trainer
         trainer = Trainer(self, data_yaml, self.cfg, logger=self.logger)
         # Start Training
-        history = trainer.train(n_epochs=n_epochs, batch_size=batch_size)
+        history = trainer.train(n_epochs=n_epochs, batch_size=batch_size, start_epoch=self.start_epoch)
         return history
 
     def predict(self,
@@ -140,3 +143,50 @@ class FPNModel(BaseModel):
             "cls_loss": cls_loss.item() if criterion and y_true else None,
             "total_loss": total_loss.item() if criterion and y_true else None
         }
+
+    def evaluate(self, data_folder, batch_size=64):
+
+        data = utils.get_val_yaml_file_path(data_folder)
+        data_class = utils.DataSetup(self.cfg, data)
+        loader = data_class.get_one_loader(batch_size)
+
+        iterator = tqdm(loader, dynamic_ncols=True)
+
+        preds = []
+        targets = []
+        for i, batch_sample in enumerate(iterator):
+
+            image_batch = torch.stack(batch_sample[0]).to(self.device)
+            box_targets = torch.stack(batch_sample[3]).to(self.device)
+            cls_targets = torch.stack(batch_sample[4]).to(self.device)
+
+            y_true = (box_targets, cls_targets)
+            nms_threshold = self.cfg.model.nms_threshold if self.data_encoder else None
+            score_threshold = self.cfg.model.score_threshold if self.data_encoder else None
+            results = self.predict(image_batch,
+                                   y_true=y_true,
+                                   device=self.device,
+                                   nms_threshold=nms_threshold,
+                                   score_threshold=score_threshold)
+
+            predictions = results["predictions"]
+            preds.extend(predictions)
+
+            # Prepare targets and predictions for evaluations.
+            for idx, (box_raw, label_raw, original_size) in enumerate(zip(batch_sample[1], batch_sample[2], batch_sample[5])):
+                boxes_raw_per_image = box_raw.to(self.device)
+                labels_raw_per_image = label_raw.to(self.device)
+
+                target_dict = dict(
+                    boxes=boxes_raw_per_image,
+                    labels=labels_raw_per_image,
+                    img_size = original_size
+                )
+
+                targets.append(target_dict)
+
+            status = f"[Validation][{i+1}]"
+
+            iterator.set_description(status)
+
+        return utils.coco_eval(targets, preds)

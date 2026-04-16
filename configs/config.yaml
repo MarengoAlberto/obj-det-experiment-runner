@@ -3,13 +3,14 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine_warmup
   - dataset: data
-  - experiment: debug
+  - experiment: baseline
   - loss@loss.loc_loss: iou
   - loss@loss.cls_loss: focal
   - _self_
 
 project:
-  name: ddp-hydra-wandb-demo
+  name: ddp-fpn-v1
+  entity: ddp-experiment
 
 metric: torch_mAP
 

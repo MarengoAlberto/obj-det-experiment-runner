@@ -1,5 +1,5 @@
 train:
-  debug: true
+  debug: false
   use_wandb: true
   epochs: 200
   batch_size: 32

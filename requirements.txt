@@ -11,3 +11,4 @@ faster-coco-eval
 matplotlib
 python-box
 pyyaml
+python-dotenv

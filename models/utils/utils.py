@@ -6,14 +6,20 @@ import zipfile
 from typing import Union
 from box import Box
 
-def load_model(model, model_folder: str):
-    path = os.path.join(model_folder, "my_yolo.pth")
+def load_model(model, model_folder: str, model_name: str = "my_yolo"):
+    path = os.path.join(model_folder, f"{model_name}.pth")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found at: {path}")
     # Load trained model's state dict.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.load_state_dict(torch.load(path, map_location=device))
-    return model.to(device)
+    try:
+        checkpoint = torch.load(path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+    except:
+        model.load_state_dict(torch.load(path, map_location=device))
+        start_epoch = 0
+    return model.to(device), start_epoch
 
 def _direct_download_url(url: str) -> str:
     # Turn a Dropbox share link into a direct download URL
@@ -104,3 +110,8 @@ def check_data_exists(data_path: str, data_dir: str = 'dataset'):
     data['full_train_path'] = train_folder
     data['full_val_path'] = val_folder
     return needs_download, url, Box(data)
+
+def get_val_yaml_file_path(data_path):
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Data not found at: {data_path}")
+    return Box({"full_val_path": data_path})
