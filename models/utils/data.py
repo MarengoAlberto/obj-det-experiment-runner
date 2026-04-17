@@ -196,7 +196,7 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
     num_samples = len(file_names)
     for image_name in file_names:
         image_id, _ = os.path.splitext(os.path.basename(image_name))
-        filepath = os.path.join(data_path, 'label', image_id+'.txt')
+        filepath = os.path.join(data_path, 'Label', image_id+'.txt')
 
         with open(filepath) as f:
             lines = f.readlines()
