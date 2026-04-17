@@ -150,7 +150,7 @@ class Trainer(BaseTrainer):
         self.logger.info(f'Optimizer: {self.optimizer}, Scheduler: {self.scheduler}')
 
         # LOSS Initialization
-        self.criterion = Loss(self.cfg)
+        self.criterion = Loss(self.cfg, self.data_encoder)
         self.logger.info(f'Criterion: {self.criterion}')
 
         # METRIC Initialization

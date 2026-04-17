@@ -34,6 +34,8 @@ python train.py
 python train.py optimizer.lr=0.0003 experiment.train.batch_size=128
 
 python train.py experiment=debug
+
+torchrun --standalone --nproc_per_node=2 train.py
 ```
 
 

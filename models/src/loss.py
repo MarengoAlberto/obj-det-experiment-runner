@@ -4,8 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Loss:
-    def __init__(self, cfg):
+    def __init__(self, cfg, data_encoder=None):
         self.cfg = cfg
+        self.data_encoder = data_encoder
         self.loc_wt = cfg.loss.loc_loss.loss_weight
         self.cls_wt = cfg.loss.cls_loss.loss_weight
         self.loss_fn = {
@@ -25,7 +26,10 @@ class Loss:
         if loc_loss == "smooth_l1":
             return torch.nn.SmoothL1Loss(reduction="mean")
         elif loc_loss == "IoU":
-            return IoULoss(iou_type=self.cfg.loss.loc_loss.iou_type, eps=self.cfg.loss.loc_loss.eps)
+            return IoULoss(anchors=self.data_encoder.anchor_boxes,
+                           encoded=self.cfg.loss.loc_loss.encoded,
+                           iou_type=self.cfg.loss.loc_loss.iou_type,
+                           eps=self.cfg.loss.loc_loss.eps)
         else:
             raise NotImplementedError(f"Localization loss {loc_loss} not implemented yet.")
 
