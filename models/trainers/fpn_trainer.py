@@ -84,6 +84,7 @@ class Trainer(BaseTrainer):
 
             if self.is_main_process(self.rank):
                 if self.wandb:
+                    output_train['learning_rate'] = self.optimizer.param_groups[0]['lr']
                     self.wandb.log({"output_train": output_train,
                                     "output_val":output_val,
                                     "epoch": epoch})
