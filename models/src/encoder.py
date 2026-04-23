@@ -3,6 +3,183 @@ import torch
 from torchvision.ops import nms
 
 
+class YOLODataEncoder:
+    def __init__(self,
+                 input_size=(300, 300),
+                 classes=("__background__", "person"),
+                 strides=[4, 8, 16, 32, 64, 128]):
+        self.input_size = input_size
+        self.classes = classes
+        self.strides = strides
+        self.grid_sizes = []
+        self.grid_centers = self.get_all_centers()
+
+    def encode(self, boxes, classes):
+        if boxes.shape[0] == 0 and classes.shape[0] == 0:
+            return torch.zeros((self.grid_centers.shape[0], 4 + 1 + 1),
+                                device=self.grid_centers.device,
+                                dtype=self.grid_centers.dtype)
+        idx, classes_assigned = self._assign_boxes_to_cells(boxes, classes)
+        bboxes_assigned = self._assign_tensor_with_zeros(boxes, idx)
+        objness = (idx >= 0).reshape(-1, 1)
+        classes_assigned = classes_assigned.reshape(-1, 1)
+        bboxes_enc = self._encode_boxes(bboxes_assigned, objness)
+        return torch.cat([objness, bboxes_enc, classes_assigned], dim=1)
+
+    def decode(self, logits, nms_threshold=0.5, score_threshold=0.5, max_dets=100):
+        input_w, input_h = self.input_size
+        device = logits.device
+        cell_centers = self.grid_centers[:, :2]
+        cell_sizes = self.grid_centers[:, 2]
+
+        min_size_clamp = torch.tensor([0., 0., 0., 0.], device=device)
+        max_size_clamp = torch.tensor([input_w, input_h, input_w, input_h], device=device)
+
+        obj_mask = logits[:, 0]
+        boxes_enc = logits[:, 1:4]
+        cls_pred = logits[:, 4:]
+
+        # loc_pred shape: [#anchors, 4], # cls_pred shape: [#anchors, #num_classes]
+        pred_boxes, cls_pred, obj_scores = self._decode_boxes(boxes_enc, cls_pred, obj_mask)
+
+        pred_boxes = torch.clamp(pred_boxes, min=min_size_clamp, max=max_size_clamp)
+
+        pred_confs = cls_pred.softmax(dim=1)  # shape: [#anchors, #num_classes]
+
+        # Perform Argmax
+        max_class_prob, conf_argmax = pred_confs.max(dim=1, keepdim=True)  # shape: [#anchors, 1]
+
+        # objectness logits -> objectness probability
+        obj_prob = obj_scores.sigmoid().reshape(-1, 1)
+        final_conf_scores = max_class_prob * obj_prob
+
+        # Combined Tensor: shape [#anchors ,6].
+        # 6: [xmin, ymin, xmax, ymax, conf_score, class_id]
+        combined_tensor = torch.cat([pred_boxes, final_conf_scores, conf_argmax], dim=1)
+
+        # Store final boxes that needs to be retained.
+        chosen_boxes = []
+
+        for cls_idx, cls_name in enumerate(self.classes):
+
+            if cls_name == "__background__":
+                continue
+
+            # Get current class ID from comnined_tensor
+            class_ids = torch.where(combined_tensor[:, 5].int() == cls_idx)[0]
+
+            class_tensor = combined_tensor[class_ids]  # shape: [#class_ids, 6]
+            class_boxes = class_tensor[:, :4]
+            class_conf = class_tensor[:, 4]
+
+            keep = nms(boxes=class_boxes, scores=class_conf, iou_threshold=nms_threshold)
+            filtered_ids = torch.where(class_conf[keep] > score_threshold)[0]
+
+            # Final boxes and conf. scores to be retained for the current class
+            # after NMS.
+            # The number of final boxes is constrained by max_dets.
+            final_box_data = class_tensor[keep][filtered_ids][:max_dets]
+
+            chosen_boxes.append(final_box_data)
+
+        return torch.cat(chosen_boxes)
+
+    def get_all_centers(self):
+        all_centers = []
+        for fm_size in self.strides:
+            all_centers.append(self._get_cell_centers(fm_size))
+        return torch.cat(all_centers, dim=0)
+
+    def _get_cell_centers(self, fm_size = 4):
+
+        img_h, img_w = self.input_size
+
+        grid_h = math.ceil(img_h / fm_size)
+        grid_w = math.ceil(img_w / fm_size)
+
+        grid_h_coords = torch.arange(0, fm_size, dtype=torch.float) * grid_h + grid_h / 2
+        grid_w_coords = torch.arange(0, fm_size, dtype=torch.float) * grid_w + grid_w / 2
+
+        x, y = torch.meshgrid(grid_w_coords, grid_h_coords, indexing="xy")
+
+        xy = torch.stack([x, y], dim=2)
+        cell_centers = xy.reshape(-1, 2)
+        self.grid_sizes.append((grid_h, grid_w, fm_size))
+        return torch.cat([cell_centers, torch.tensor((grid_h, grid_w, fm_size)).repeat(cell_centers.shape[0], 1)], dim=1)
+
+    def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
+        cell_centers = self.grid_centers[:, :2]
+        cell_sizes = self.grid_centers[:, 2]
+        classes = torch.tensor(classes, dtype=torch.int64)
+        box_centers = torch.stack(
+            [
+                (boxes[:, 0] + boxes[:, 2]) / 2,
+                (boxes[:, 1] + boxes[:, 3]) / 2,
+            ],
+            dim=1
+        )
+
+        diff = cell_centers[:, None, :] - box_centers[None, :, :]
+        half = (cell_sizes * 0.5)[:, None, None]
+        inside = (diff.abs() <= half).all(dim=2)
+
+        assigned_box_ids = torch.full((cell_centers.shape[0],), -1, dtype=torch.long)
+        assigned_classes = torch.full((cell_centers.shape[0],), background_id, dtype=torch.long)
+
+        has_box = inside.any(dim=1)
+        first_match = inside.float().argmax(dim=1)
+
+        assigned_box_ids[has_box] = first_match[has_box]
+        assigned_classes[has_box] = classes[first_match[has_box]].squeeze(-1)
+
+        return assigned_box_ids, assigned_classes
+
+    def _assign_tensor_with_zeros(self, tensor, idx, out_shape=4):
+        # bboxes_norm: [n_boxes, 4]
+        # idx: [n_cells], values in [0, n_boxes-1] or -1
+
+        out = torch.zeros((idx.shape[0], out_shape), device=tensor.device, dtype=bboxes_norm.dtype)
+
+        valid = idx >= 0
+        out[valid] = tensor[idx[valid]]
+
+        return out
+
+    def _encode_boxes(self, boxes, obj_mask, variances=(0.1, 0.2)):
+        cell_centers = self.grid_centers[:, :2]
+        cell_sizes = self.grid_centers[:, 2]
+        b_wh = boxes[:, 2:] - boxes[:, :2]
+        b_ctr = boxes[:, :2] + 0.5 * b_wh
+
+        if cell_sizes.ndim == 1:
+            cell_sizes_xy = cell_sizes[:, None]     # [16, 1]
+        else:
+            cell_sizes_xy = cell_sizes
+        dxdy = (b_ctr - cell_centers) / (cell_sizes_xy * variances[0])
+        dwdh = torch.log((b_wh).clamp(min=1e-6)) / variances[1]
+        dxdy = dxdy.masked_fill(~obj_mask, 0)
+        dwdh = dwdh.masked_fill(~obj_mask, 0)
+        return torch.cat([dxdy, dwdh], dim=1)
+
+    def _decode_boxes(self, deltas, classes, obj_mask, variances=(0.1, 0.2)):
+        cell_centers = self.grid_centers[:, :2]
+        cell_sizes = self.grid_centers[:, 2]
+        dxy = (deltas[:, :2] * variances[0])
+        dwh = (deltas[:, 2:] * variances[1])
+        dwh = dwh.clamp(min=-4.0, max=4.0).exp()
+
+        if cell_sizes.ndim == 1:
+            cell_sizes_xy = cell_sizes[:, None]     # [16, 1]
+        else:
+            cell_sizes_xy = cell_sizes
+
+        p_ctr = cell_centers + dxy * cell_sizes_xy
+        half = 0.5 * dwh
+        decoded_boxes = torch.cat([p_ctr - half, p_ctr + half], dim=1)
+        obj_mask = (obj_mask >= 0.5)  # bool mask
+        keep = obj_mask.squeeze(-1) if obj_mask.ndim > 1 else obj_mask
+        return decoded_boxes[keep], classes[keep], obj_mask[keep]
+
 class DataEncoder:
     def __init__(self, input_size=(300, 300), classes=("__background__", "person")):
         self.input_size = input_size
