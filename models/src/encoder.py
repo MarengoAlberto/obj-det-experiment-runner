@@ -86,26 +86,33 @@ class YOLODataEncoder:
 
     def get_all_centers(self):
         all_centers = []
-        for fm_size in self.strides:
-            all_centers.append(self._get_cell_centers(fm_size))
+        for stride in self.strides:
+            all_centers.append(self._get_cell_centers(stride))
         return torch.cat(all_centers, dim=0)
 
-    def _get_cell_centers(self, fm_size = 4):
-
+    def _get_cell_centers(self, stride=4):
         img_h, img_w = self.input_size
 
-        grid_h = math.ceil(img_h / fm_size)
-        grid_w = math.ceil(img_w / fm_size)
+        grid_h = math.ceil(img_h / stride)
+        grid_w = math.ceil(img_w / stride)
 
-        grid_h_coords = torch.arange(0, fm_size, dtype=torch.float) * grid_h + grid_h / 2
-        grid_w_coords = torch.arange(0, fm_size, dtype=torch.float) * grid_w + grid_w / 2
+        grid_h_coords = torch.arange(0, grid_h, dtype=torch.float) * stride + stride / 2
+        grid_w_coords = torch.arange(0, grid_w, dtype=torch.float) * stride + stride / 2
 
         x, y = torch.meshgrid(grid_w_coords, grid_h_coords, indexing="xy")
 
         xy = torch.stack([x, y], dim=2)
         cell_centers = xy.reshape(-1, 2)
-        self.grid_sizes.append((grid_h, grid_w, fm_size))
-        return torch.cat([cell_centers, torch.tensor((grid_h, grid_w, fm_size)).repeat(cell_centers.shape[0], 1)], dim=1)
+
+        self.grid_sizes.append((grid_h, grid_w, stride))
+
+        return torch.cat(
+            [
+                cell_centers,
+                torch.tensor((grid_h, grid_w, stride)).repeat(cell_centers.shape[0], 1)
+            ],
+            dim=1
+        )
 
     def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
         cell_centers = self.grid_centers[:, :2]
@@ -138,7 +145,7 @@ class YOLODataEncoder:
         # bboxes_norm: [n_boxes, 4]
         # idx: [n_cells], values in [0, n_boxes-1] or -1
 
-        out = torch.zeros((idx.shape[0], out_shape), device=tensor.device, dtype=bboxes_norm.dtype)
+        out = torch.zeros((idx.shape[0], out_shape), device=tensor.device, dtype=tensor.dtype)
 
         valid = idx >= 0
         out[valid] = tensor[idx[valid]]
@@ -146,38 +153,62 @@ class YOLODataEncoder:
         return out
 
     def _encode_boxes(self, boxes, obj_mask, variances=(0.1, 0.2)):
-        cell_centers = self.grid_centers[:, :2]
-        cell_sizes = self.grid_centers[:, 2]
-        b_wh = boxes[:, 2:] - boxes[:, :2]
-        b_ctr = boxes[:, :2] + 0.5 * b_wh
+        """
+        boxes: [N, 4] in xyxy format
+        obj_mask: [N] or [N, 1]
+        self.grid_centers: [N, 5] -> x, y, grid_h, grid_w, stride
+        """
 
-        if cell_sizes.ndim == 1:
-            cell_sizes_xy = cell_sizes[:, None]     # [16, 1]
+        cell_centers = self.grid_centers[:, :2]  # [N, 2]
+        strides = self.grid_centers[:, 4:5]  # [N, 1], use stride column
+
+        b_wh = boxes[:, 2:] - boxes[:, :2]  # [N, 2]
+        b_ctr = boxes[:, :2] + 0.5 * b_wh  # [N, 2]
+
+        dxdy = (b_ctr - cell_centers) / (strides * variances[0])
+
+        # Normalize box size by stride before taking log
+        dwdh = torch.log((b_wh / strides).clamp(min=1e-6)) / variances[1]
+
+        if obj_mask.ndim == 1:
+            obj_mask_expanded = obj_mask[:, None]
         else:
-            cell_sizes_xy = cell_sizes
-        dxdy = (b_ctr - cell_centers) / (cell_sizes_xy * variances[0])
-        dwdh = torch.log((b_wh).clamp(min=1e-6)) / variances[1]
-        dxdy = dxdy.masked_fill(~obj_mask, 0)
-        dwdh = dwdh.masked_fill(~obj_mask, 0)
+            obj_mask_expanded = obj_mask
+
+        dxdy = dxdy.masked_fill(~obj_mask_expanded.bool(), 0)
+        dwdh = dwdh.masked_fill(~obj_mask_expanded.bool(), 0)
+
         return torch.cat([dxdy, dwdh], dim=1)
 
     def _decode_boxes(self, deltas, classes, obj_mask, variances=(0.1, 0.2)):
-        cell_centers = self.grid_centers[:, :2]
-        cell_sizes = self.grid_centers[:, 2]
-        dxy = (deltas[:, :2] * variances[0])
-        dwh = (deltas[:, 2:] * variances[1])
-        dwh = dwh.clamp(min=-4.0, max=4.0).exp()
+        """
+        deltas: [N, 4]
+        classes: [N, ...]
+        obj_mask: [N] or [N, 1]
+        self.grid_centers: [N, 5] -> x, y, grid_h, grid_w, stride
+        """
 
-        if cell_sizes.ndim == 1:
-            cell_sizes_xy = cell_sizes[:, None]     # [16, 1]
-        else:
-            cell_sizes_xy = cell_sizes
+        cell_centers = self.grid_centers[:, :2]  # [N, 2]
+        strides = self.grid_centers[:, 4:5]  # [N, 1], use stride column
 
-        p_ctr = cell_centers + dxy * cell_sizes_xy
-        half = 0.5 * dwh
+        dxy = deltas[:, :2] * variances[0]
+        dwh = deltas[:, 2:] * variances[1]
+
+        p_ctr = cell_centers + dxy * strides
+
+        # Reverse of log(b_wh / stride)
+        p_wh = dwh.clamp(min=-4.0, max=4.0).exp() * strides
+
+        half = 0.5 * p_wh
         decoded_boxes = torch.cat([p_ctr - half, p_ctr + half], dim=1)
-        obj_mask = (obj_mask >= 0.5)  # bool mask
-        keep = obj_mask.squeeze(-1) if obj_mask.ndim > 1 else obj_mask
+
+        obj_mask = obj_mask >= 0.5
+
+        if obj_mask.ndim > 1:
+            keep = obj_mask.squeeze(-1)
+        else:
+            keep = obj_mask
+
         return decoded_boxes[keep], classes[keep], obj_mask[keep]
 
 class DataEncoder:
