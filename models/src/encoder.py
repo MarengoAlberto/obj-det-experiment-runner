@@ -29,60 +29,61 @@ class YOLODataEncoder:
     def decode(self, logits, nms_threshold=0.5, score_threshold=0.5, max_dets=100):
         input_w, input_h = self.input_size
         device = logits.device
-        cell_centers = self.grid_centers[:, :2]
-        cell_sizes = self.grid_centers[:, 2]
 
         min_size_clamp = torch.tensor([0., 0., 0., 0.], device=device)
         max_size_clamp = torch.tensor([input_w, input_h, input_w, input_h], device=device)
 
         obj_mask = logits[:, 0]
-        boxes_enc = logits[:, 1:4]
-        cls_pred = logits[:, 4:]
+        boxes_enc = logits[:, 1:5]
+        class_ids_raw = logits[:, 5].long()
 
-        # loc_pred shape: [#anchors, 4], # cls_pred shape: [#anchors, #num_classes]
-        pred_boxes, cls_pred, obj_scores = self._decode_boxes(boxes_enc, cls_pred, obj_mask)
+        pred_boxes, class_ids, obj_scores = self._decode_boxes(
+            boxes_enc,
+            class_ids_raw,
+            obj_mask
+        )
 
         pred_boxes = torch.clamp(pred_boxes, min=min_size_clamp, max=max_size_clamp)
 
-        pred_confs = cls_pred.softmax(dim=1)  # shape: [#anchors, #num_classes]
+        final_conf_scores = obj_scores.float().reshape(-1, 1)
+        class_ids = class_ids.reshape(-1, 1).float()
 
-        # Perform Argmax
-        max_class_prob, conf_argmax = pred_confs.max(dim=1, keepdim=True)  # shape: [#anchors, 1]
+        combined_tensor = torch.cat(
+            [pred_boxes, final_conf_scores, class_ids],
+            dim=1
+        )
 
-        # objectness logits -> objectness probability
-        obj_prob = obj_scores.sigmoid().reshape(-1, 1)
-        final_conf_scores = max_class_prob * obj_prob
-
-        # Combined Tensor: shape [#anchors ,6].
-        # 6: [xmin, ymin, xmax, ymax, conf_score, class_id]
-        combined_tensor = torch.cat([pred_boxes, final_conf_scores, conf_argmax], dim=1)
-
-        # Store final boxes that needs to be retained.
         chosen_boxes = []
 
         for cls_idx, cls_name in enumerate(self.classes):
-
             if cls_name == "__background__":
                 continue
 
-            # Get current class ID from comnined_tensor
-            class_ids = torch.where(combined_tensor[:, 5].int() == cls_idx)[0]
+            class_ids_mask = torch.where(combined_tensor[:, 5].int() == cls_idx)[0]
 
-            class_tensor = combined_tensor[class_ids]  # shape: [#class_ids, 6]
+            if class_ids_mask.numel() == 0:
+                continue
+
+            class_tensor = combined_tensor[class_ids_mask]
             class_boxes = class_tensor[:, :4]
             class_conf = class_tensor[:, 4]
 
-            keep = nms(boxes=class_boxes, scores=class_conf, iou_threshold=nms_threshold)
-            filtered_ids = torch.where(class_conf[keep] > score_threshold)[0]
+            keep = nms(
+                boxes=class_boxes,
+                scores=class_conf,
+                iou_threshold=nms_threshold
+            )
 
-            # Final boxes and conf. scores to be retained for the current class
-            # after NMS.
-            # The number of final boxes is constrained by max_dets.
+            filtered_ids = torch.where(class_conf[keep] > score_threshold)[0]
             final_box_data = class_tensor[keep][filtered_ids][:max_dets]
 
-            chosen_boxes.append(final_box_data)
+            if final_box_data.numel() > 0:
+                chosen_boxes.append(final_box_data)
 
-        return torch.cat(chosen_boxes)
+        if len(chosen_boxes) == 0:
+            return torch.empty((0, 6), device=device)
+
+        return torch.cat(chosen_boxes, dim=0)
 
     def get_all_centers(self):
         all_centers = []
@@ -116,7 +117,7 @@ class YOLODataEncoder:
 
     def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
         cell_centers = self.grid_centers[:, :2]
-        cell_sizes = self.grid_centers[:, 2]
+        cell_sizes = self.grid_centers[:, 4]
         classes = torch.tensor(classes, dtype=torch.int64)
         box_centers = torch.stack(
             [
@@ -181,33 +182,19 @@ class YOLODataEncoder:
         return torch.cat([dxdy, dwdh], dim=1)
 
     def _decode_boxes(self, deltas, classes, obj_mask, variances=(0.1, 0.2)):
-        """
-        deltas: [N, 4]
-        classes: [N, ...]
-        obj_mask: [N] or [N, 1]
-        self.grid_centers: [N, 5] -> x, y, grid_h, grid_w, stride
-        """
-
-        cell_centers = self.grid_centers[:, :2]  # [N, 2]
-        strides = self.grid_centers[:, 4:5]  # [N, 1], use stride column
+        cell_centers = self.grid_centers[:, :2]
+        strides = self.grid_centers[:, 4:5]
 
         dxy = deltas[:, :2] * variances[0]
         dwh = deltas[:, 2:] * variances[1]
 
         p_ctr = cell_centers + dxy * strides
-
-        # Reverse of log(b_wh / stride)
         p_wh = dwh.clamp(min=-4.0, max=4.0).exp() * strides
 
         half = 0.5 * p_wh
         decoded_boxes = torch.cat([p_ctr - half, p_ctr + half], dim=1)
 
-        obj_mask = obj_mask >= 0.5
-
-        if obj_mask.ndim > 1:
-            keep = obj_mask.squeeze(-1)
-        else:
-            keep = obj_mask
+        keep = obj_mask >= 0.5
 
         return decoded_boxes[keep], classes[keep], obj_mask[keep]
 
