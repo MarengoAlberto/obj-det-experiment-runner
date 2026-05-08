@@ -114,8 +114,8 @@ class YOLODataEncoder:
 
     def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
         cell_centers = self.grid_centers[:, :2]
-        cell_sizes = self.grid_centers[:, 4]
-        classes = torch.tensor(classes, dtype=torch.int64)
+        classes = torch.as_tensor(classes, dtype=torch.long, device=boxes.device)
+
         box_centers = torch.stack(
             [
                 (boxes[:, 0] + boxes[:, 2]) / 2,
@@ -124,18 +124,32 @@ class YOLODataEncoder:
             dim=1
         )
 
-        diff = cell_centers[:, None, :] - box_centers[None, :, :]
-        half = (cell_sizes * 0.5)[:, None, None]
-        inside = (diff.abs() <= half).all(dim=2)
+        assigned_box_ids = torch.full(
+            (cell_centers.shape[0],),
+            -1,
+            dtype=torch.long,
+            device=boxes.device
+        )
 
-        assigned_box_ids = torch.full((cell_centers.shape[0],), -1, dtype=torch.long)
-        assigned_classes = torch.full((cell_centers.shape[0],), background_id, dtype=torch.long)
+        assigned_classes = torch.full(
+            (cell_centers.shape[0],),
+            background_id,
+            dtype=torch.long,
+            device=boxes.device
+        )
 
-        has_box = inside.any(dim=1)
-        first_match = inside.float().argmax(dim=1)
+        # distance: [num_cells, num_boxes]
+        dist = torch.cdist(cell_centers, box_centers)
 
-        assigned_box_ids[has_box] = first_match[has_box]
-        assigned_classes[has_box] = classes[first_match[has_box]].squeeze(-1)
+        # for each box, pick closest cell
+        best_cell_per_box = dist.argmin(dim=0)
+
+        assigned_box_ids[best_cell_per_box] = torch.arange(
+            boxes.shape[0],
+            device=boxes.device
+        )
+
+        assigned_classes[best_cell_per_box] = classes.squeeze(-1)
 
         return assigned_box_ids, assigned_classes
 
