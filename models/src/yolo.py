@@ -31,6 +31,7 @@ class YOLOHeads(nn.Module):
         preds = []
 
         for idx, feature_map in enumerate(feature_maps):
+            # print(f"feature map {idx} shape: {feature_map.shape}")
             pred = self.head[idx](feature_map)
             pred = pred.permute(0, 2, 3, 1).reshape(pred.shape[0], -1, self.output_head_nodes)
             preds.append(pred)

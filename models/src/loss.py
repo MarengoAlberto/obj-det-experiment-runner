@@ -7,14 +7,37 @@ class Loss:
     def __init__(self, cfg, data_encoder=None):
         self.cfg = cfg
         self.data_encoder = data_encoder
-        self.loc_wt = cfg.loss.loc_loss.loss_weight
-        self.cls_wt = cfg.loss.cls_loss.loss_weight
-        self.loss_fn = {
-            "loc_loss": self.get_loc_loss_fn(cfg.loss.loc_loss.name),
-            "cls_loss": self.get_cls_loss_fn(cfg.loss.cls_loss.name)
-        }
+        self.yolo_mode = cfg.loss.name == "yolo"
+        if cfg.loss.loc_loss.name == "yolo":
+            self.loss_fn = YOLODetectionLoss(num_classes=cfg.dataset.nc,
+                                             obj_loss=cfg.loss.obj_loss,
+                                             cls_loss=cfg.loss.cls_loss,
+                                             box_loss=cfg.loss.box_loss,
+                                             lambda_obj=cfg.loss.lambda_obj,
+                                             lambda_bbox=cfg.loss.lambda_bbox,
+                                             lambda_cls=cfg.loss.lambda_cls,
+                                             focal_alpha=cfg.loss.focal_alpha,
+                                             focal_gamma=cfg.loss.focal_gamma)
+        else:
+            self.loc_wt = cfg.loss.loc_loss.loss_weight
+            self.cls_wt = cfg.loss.cls_loss.loss_weight
+            self.loss_fn = {
+                "loc_loss": self.get_loc_loss_fn(cfg.loss.loc_loss.name),
+                "cls_loss": self.get_cls_loss_fn(cfg.loss.cls_loss.name)
+            }
 
     def __call__(self, y_true, y_pred):
+        if self.yolo_mode:
+            pred_logits = y_pred[0] if isinstance(y_pred, (tuple, list)) else y_pred
+            target_encoded = y_true[0] if isinstance(y_true, (tuple, list)) else y_true
+            total_loss, parts = self.loss_fn(pred_logits, target_encoded)
+            return {
+                "loc_loss": parts["bbox"],
+                "cls_loss": parts["cls"],
+                "obj_loss": parts["obj"],
+                "total_loss": total_loss,
+            }
+
         pred_boxes, pred_labels = y_pred
         box_targets, cls_targets = y_true
         loc_loss = self.loss_fn["loc_loss"](pred_boxes, box_targets, cls_targets)
@@ -42,6 +65,133 @@ class Loss:
             return OHEMLoss()
         else:
             raise NotImplementedError(f"Classification loss {cls_loss} not implemented yet.")
+
+
+def sigmoid_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean"):
+    targets = targets.to(dtype=logits.dtype)
+    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    p = torch.sigmoid(logits)
+    p_t = p * targets + (1.0 - p) * (1.0 - targets)
+    alpha_t = alpha * targets + (1.0 - alpha) * (1.0 - targets)
+    loss = alpha_t * (1.0 - p_t).pow(gamma) * bce
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    return loss
+
+
+def softmax_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean"):
+    # targets: class indices [K], logits: [K, C]
+    ce = F.cross_entropy(logits, targets, reduction="none")
+    pt = torch.exp(-ce)
+    # Simple scalar alpha (same for all positive classes)
+    at = torch.full_like(pt, alpha)
+    loss = at * (1.0 - pt).pow(gamma) * ce
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    return loss
+
+
+class YOLODetectionLoss(nn.Module):
+    def __init__(self,
+                 num_classes,
+                 obj_loss="focal",
+                 cls_loss="focal",
+                 box_loss="s1",
+                 lambda_obj=1.0,
+                 lambda_bbox=5.0,
+                 lambda_cls=1.0,
+                 focal_alpha=0.25,
+                 focal_gamma=2.0):
+        super().__init__()
+        self.num_classes = int(num_classes)
+        self.obj_loss = obj_loss
+        self.cls_loss = cls_loss
+        self.box_loss = box_loss
+        self.lambda_obj = float(lambda_obj)
+        self.lambda_bbox = float(lambda_bbox)
+        self.lambda_cls = float(lambda_cls)
+        self.focal_alpha = float(focal_alpha)
+        self.focal_gamma = float(focal_gamma)
+
+    def forward(self, pred_logits, target_encoded):
+        # Accept [B, N, ...] or [N, ...]
+        if pred_logits.ndim == 3:
+            pred_logits = pred_logits.reshape(-1, pred_logits.shape[-1])
+            target_encoded = target_encoded.reshape(-1, target_encoded.shape[-1])
+
+        pred_obj = pred_logits[:, 0]
+        pred_bbox = pred_logits[:, 1:5]
+        pred_cls = pred_logits[:, 5:5 + self.num_classes]
+
+        tgt_obj = target_encoded[:, 0].to(pred_obj.dtype)
+        tgt_bbox = target_encoded[:, 1:5].to(pred_bbox.dtype)
+        tgt_cls = target_encoded[:, 5].long()
+
+        pos_mask = tgt_obj > 0.5
+
+        if self.obj_loss == "focal":
+            loss_obj = sigmoid_focal_loss(pred_obj, tgt_obj, alpha=self.focal_alpha, gamma=self.focal_gamma)
+        elif self.obj_loss == "bce":
+            loss_obj = F.binary_cross_entropy_with_logits(pred_obj, tgt_obj)
+        else:
+            raise ValueError(f"Unsupported obj_loss: {self.obj_loss}")
+
+        if pos_mask.any():
+            if self.box_loss == "s1":
+                loss_bbox = F.smooth_l1_loss(pred_bbox[pos_mask], tgt_bbox[pos_mask])
+            elif self.box_loss == "l1":
+                loss_bbox = F.l1_loss(pred_bbox[pos_mask], tgt_bbox[pos_mask])
+            else:
+                raise ValueError(f"Unsupported box_loss: {self.box_loss}")
+
+            if self.cls_loss == "focal":
+                loss_cls = softmax_focal_loss(
+                    pred_cls[pos_mask], tgt_cls[pos_mask], alpha=self.focal_alpha, gamma=self.focal_gamma
+                )
+            elif self.cls_loss == "ce":
+                loss_cls = F.cross_entropy(pred_cls[pos_mask], tgt_cls[pos_mask])
+            elif self.cls_loss == "bce":
+                tgt_onehot = F.one_hot(tgt_cls[pos_mask], num_classes=self.num_classes).to(pred_cls.dtype)
+                loss_cls = F.binary_cross_entropy_with_logits(pred_cls[pos_mask], tgt_onehot)
+            else:
+                raise ValueError(f"Unsupported cls_loss: {self.cls_loss}")
+        else:
+            z = pred_logits.new_tensor(0.0)
+            loss_bbox, loss_cls = z, z
+
+        total = self.lambda_obj * loss_obj + self.lambda_bbox * loss_bbox + self.lambda_cls * loss_cls
+        return total, {"obj": loss_obj.detach(), "bbox": loss_bbox.detach(), "cls": loss_cls.detach()}
+
+
+def yolo_loss(
+    pred_logits,             # [B,N,5+C] or [N,5+C]
+    target_encoded,          # [B,N,6] or [N,6]
+    *,
+    num_classes,
+    obj_loss="focal",        # "focal" | "bce"
+    cls_loss="focal",        # "focal" | "ce" | "bce"
+    box_loss="s1",           # "s1" | "l1"
+    lambda_obj=1.0,
+    lambda_bbox=5.0,
+    lambda_cls=1.0,
+    focal_alpha=0.25,
+    focal_gamma=2.0,
+):
+    return YOLODetectionLoss(
+        num_classes=num_classes,
+        obj_loss=obj_loss,
+        cls_loss=cls_loss,
+        box_loss=box_loss,
+        lambda_obj=lambda_obj,
+        lambda_bbox=lambda_bbox,
+        lambda_cls=lambda_cls,
+        focal_alpha=focal_alpha,
+        focal_gamma=focal_gamma,
+    )(pred_logits, target_encoded)
 
 
 class SmoothL1Loss(nn.Module):
