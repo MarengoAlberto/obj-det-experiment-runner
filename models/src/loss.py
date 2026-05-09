@@ -8,7 +8,7 @@ class Loss:
         self.cfg = cfg
         self.data_encoder = data_encoder
         self.yolo_mode = cfg.loss.name == "yolo"
-        if cfg.loss.loc_loss.name == "yolo":
+        if self.yolo_mode:
             self.loss_fn = YOLODetectionLoss(num_classes=cfg.dataset.nc,
                                              obj_loss=cfg.loss.obj_loss,
                                              cls_loss=cfg.loss.cls_loss,
