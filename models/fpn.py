@@ -15,7 +15,7 @@ class FPNModel(BaseModel):
     def __init__(self, cfg, load_model=True, *args, **kwargs):
 
         # Initialize Logger
-        self.logger = utils.get_logger(cfg.experiment.name)
+        self.logger = utils.get_logger(cfg.model.name)
 
         # MODEL Initialization
         self.model, self.data_encoder = src.get_model(cfg)
@@ -153,7 +153,7 @@ class FPNModel(BaseModel):
     def evaluate(self, data_folder, batch_size=64):
 
         data = utils.get_val_yaml_file_path(data_folder)
-        data_class = utils.DataSetup(self.cfg, data)
+        data_class = utils.DataSetup(self.cfg, data, self.data_encoder)
         loader = data_class.get_one_loader(batch_size)
 
         iterator = tqdm(loader, dynamic_ncols=True)

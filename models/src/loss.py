@@ -7,7 +7,7 @@ class Loss:
     def __init__(self, cfg, data_encoder=None):
         self.cfg = cfg
         self.data_encoder = data_encoder
-        self.yolo_mode = cfg.loss.name == "yolo"
+        self.yolo_mode = cfg.model.name == "yolo"
         if self.yolo_mode:
             self.loss_fn = YOLODetectionLoss(num_classes=cfg.dataset.nc,
                                              obj_loss=cfg.loss.obj_loss,

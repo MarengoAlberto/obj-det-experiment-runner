@@ -27,7 +27,7 @@ class YOLO(FPNModel):
         with torch.no_grad():
             logits = self.model(image_batch)
 
-        if criterion and y_true:
+        if criterion and y_true is not None:
             loss_results = criterion(logits, y_true)
 
             obj_loss = loss_results["obj_loss"].item()
@@ -39,7 +39,6 @@ class YOLO(FPNModel):
         if self.data_encoder:
             for idx in range(image_batch.shape[0]):
                 prediction_data = self.data_encoder.decode(logits[idx],
-                                                           loc_device,
                                                            nms_threshold=nms_threshold or self.cfg.model.nms_threshold,
                                                            score_threshold=score_threshold or self.cfg.model.score_threshold)
                 pred_bbox = prediction_data[:, :4]
@@ -55,22 +54,22 @@ class YOLO(FPNModel):
 
         return {
             "predictions": predictions,
-            "obj_loss": obj_loss if criterion and y_true else None,
-            "loc_loss": loc_loss.item() if criterion and y_true else None,
-            "cls_loss": cls_loss.item() if criterion and y_true else None,
-            "total_loss": total_loss.item() if criterion and y_true else None
+            "obj_loss": obj_loss if criterion and y_true is not None else None,
+            "loc_loss": loc_loss if criterion and y_true is not None else None,
+            "cls_loss": cls_loss if criterion and y_true is not None else None,
+            "total_loss": total_loss if criterion and y_true is not None else None
         }
 
     def evaluate(self, data_folder, batch_size=64):
 
         data = utils.get_val_yaml_file_path(data_folder)
-        data_class = utils.DataSetup(self.cfg, data)
+        data_class = utils.DataSetup(self.cfg, data, self.data_encoder)
         loader = data_class.get_one_loader(batch_size)
 
         iterator = tqdm(loader, dynamic_ncols=True)
 
         preds = []
-        targets = []
+        true_labels = []
         for i, batch_sample in enumerate(iterator):
 
             image_batch = torch.stack(batch_sample[0]).to(self.device)
@@ -98,10 +97,10 @@ class YOLO(FPNModel):
                     img_size = original_size
                 )
 
-                targets.append(target_dict)
+                true_labels.append(target_dict)
 
             status = f"[Validation][{i+1}]"
 
             iterator.set_description(status)
 
-        return utils.coco_eval(targets, preds)
+        return utils.coco_eval(true_labels, preds)
