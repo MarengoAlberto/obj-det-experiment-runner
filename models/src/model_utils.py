@@ -1,0 +1,21 @@
+from . import Detector, DataEncoder, YOLO, YOLODataEncoder
+
+def get_model(cfg):
+    if cfg.model.name == 'fpn':
+        model = Detector(backbone_name=cfg.model.backbone_name,
+                              num_classes=len(cfg.dataset.names),
+                              fpn_channels=cfg.model.fpn_channels,
+                              num_anchors=cfg.model.num_anchors, )
+        data_encoder = DataEncoder(input_size=cfg.model.image_size[:2], classes=cfg.dataset.names)
+    elif cfg.model.name == 'yolo':
+        model = YOLO(backbone_name=cfg.model.backbone_name,
+                     train_backbone=cfg.model.train_backbone,
+                     returned_layers=cfg.model.returned_layers,
+                     num_classes=cfg.dataset.nc,
+                     fpn_channels=cfg.model.fpn_channels)
+        data_encoder = YOLODataEncoder(input_size=cfg.model.image_size[:2],
+                                       classes=cfg.dataset.names,
+                                       strides=model.backbone.strides)
+    else:
+        raise ValueError(f"Unknown model_type: {cfg.model.name}")
+    return model, data_encoder

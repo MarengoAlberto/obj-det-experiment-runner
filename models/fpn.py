@@ -5,9 +5,8 @@ from tqdm.auto import tqdm
 from torchinfo import summary
 
 from .base_model import BaseModel
-from .trainers.fpn_trainer import Trainer
-from .src import Detector, DataEncoder
-from . import utils
+from .trainers import get_trainer
+from . import utils, src
 
 class FPNModel(BaseModel):
 
@@ -16,14 +15,12 @@ class FPNModel(BaseModel):
     def __init__(self, cfg, load_model=True, *args, **kwargs):
 
         # Initialize Logger
-        self.logger = utils.get_logger('fpn')
+        self.logger = utils.get_logger(cfg.experiment.name)
 
         # MODEL Initialization
-        self.model = Detector(backbone_name=cfg.model.backbone_name,
-                              num_classes=len(cfg.dataset.names),
-                              fpn_channels=cfg.model.fpn_channels,
-                              num_anchors=cfg.model.num_anchors,)
-        self.data_encoder = DataEncoder(input_size=cfg.model.image_size[:2], classes=cfg.dataset.names)
+        self.model, self.data_encoder = src.get_model(cfg)
+        self.trainer_cls = get_trainer(cfg)
+
         try:
             if load_model:
                 self.model, self.start_epoch = utils.load_model(self.model, cfg.model.metadata.best_model_folder, *args, **kwargs)
@@ -87,7 +84,7 @@ class FPNModel(BaseModel):
             utils.download_and_unzip_zip(url, data_dir)
 
         # Initialize Trainer
-        trainer = Trainer(self, data_yaml, self.cfg, logger=self.logger, close_when_done=(not coco_eval))
+        trainer = self.trainer_cls(self, data_yaml, self.cfg, logger=self.logger, close_when_done=(not coco_eval))
         # Start Training
         history = trainer.train(n_epochs=n_epochs, batch_size=batch_size, start_epoch=self.start_epoch)
         coco_eval_results = None

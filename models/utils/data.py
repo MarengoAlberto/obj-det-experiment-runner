@@ -11,9 +11,10 @@ from .augmentations import get_augmentations
 
 class DataSetup:
 
-    def __init__(self, cfg, data, use_ddp=False, rank=0, world_size=1):
+    def __init__(self, cfg, data, data_encoder, use_ddp=False, rank=0, world_size=1):
         self.cfg = cfg
         self.data = data
+        self.data_encoder = data_encoder
         self.use_ddp = use_ddp
         self.rank = rank
         self.world_size = world_size
@@ -97,6 +98,17 @@ class DataSetup:
         if self.cfg.model.name == "fpn":
             dataset = FPNDataset(
                 data_path=path,
+                data_encoder=self.data_encoder,
+                transform=trasform_function,
+                classes=self.classes,
+                input_size=self.image_size,
+                is_train=train,
+                debug=self.cfg.experiment.train.debug,
+            )
+        elif self.cfg.model.name == "yolo":
+            dataset = YoloDataset(
+                data_path=path,
+                data_encoder=self.data_encoder,
                 transform=trasform_function,
                 classes=self.classes,
                 input_size=self.image_size,
@@ -111,6 +123,7 @@ class FPNDataset(Dataset):
     def __init__(
         self,
         data_path,
+        data_encoder,
         classes,
         transform=None,
         is_train=True,
@@ -122,7 +135,7 @@ class FPNDataset(Dataset):
         self.transforms = transform
         self.input_size = input_size
         self.is_train = is_train
-        self.encoder = DataEncoder(self.input_size[:2], self.classes)
+        self.encoder = data_encoder
 
         self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path, train=is_train, shuffle=is_train, debug=debug)
 
@@ -243,3 +256,52 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
         labels = labels[:num_samples]
 
     return image_paths, boxes, labels, num_samples
+
+class YoloDataset(FPNDataset):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, idx):
+
+        image_path = self.image_paths[idx]
+        indexed_boxes = self.boxes[idx]
+        indexed_labels = self.labels[idx]
+
+        img = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
+
+        height = img.shape[0]
+        width = img.shape[1]
+
+        if self.transforms:
+            transformed = self.transforms(image=img, bboxes=indexed_boxes, category_ids=indexed_labels)
+
+        else:  # Mandatory transforms to be applied.
+
+            common_transforms = A.Compose(
+                [A.Resize(
+                    height=self.input_size[0], width=self.input_size[1],
+                    interpolation=4
+                ),
+                    ToTensorV2()],
+                bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category_ids"])
+            )
+
+            transformed = common_transforms(image=img, bboxes=indexed_boxes, category_ids=indexed_labels)
+
+        transformed_img = transformed["image"]
+        transformed_boxes = transformed["bboxes"]
+        transformed_labels = transformed["category_ids"]
+
+        transformed_boxes = torch.tensor(transformed_boxes, dtype=torch.float)
+        transformed_labels = torch.tensor(transformed_labels, dtype=torch.int)
+
+        # ===========================================================
+        # Generate Encoded bounding boxes and labels
+        # ===========================================================
+
+        encoded = self.encoder.encode(transformed_boxes, transformed_labels)
+
+        original_size = torch.tensor((height, width), dtype=torch.int)
+
+        return transformed_img, transformed_boxes, transformed_labels, encoded, original_size
