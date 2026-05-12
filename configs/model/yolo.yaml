@@ -1,0 +1,12 @@
+name: yolo
+image_size: [300, 300, 3]
+backbone_name: resnet18
+fpn_channels: 16
+returned_layers: [4]
+train_backbone: false
+
+nms_threshold: 0.55
+score_threshold: 0.05
+
+metadata:
+  best_model_folder: trained_model

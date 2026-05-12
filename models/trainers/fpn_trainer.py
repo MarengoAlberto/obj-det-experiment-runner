@@ -13,7 +13,7 @@ from .base_trainer import BaseTrainer
 from ..src import Loss
 from ..utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger
 
-class Trainer(BaseTrainer):
+class FPNTrainer(BaseTrainer):
 
     rank, world_size, local_rank = 0, 1, 0
     use_ddp = False
@@ -59,7 +59,7 @@ class Trainer(BaseTrainer):
         self.logger.info("Start training...")
 
         # DATA LOADER Initialization
-        data_class = DataSetup(self.cfg, self.data, self.use_ddp, self.rank, self.world_size)
+        data_class = DataSetup(self.cfg, self.data, self.data_encoder, self.use_ddp, self.rank, self.world_size)
         self.train_loader, self.val_loader, self.train_sampler, self.val_sampler = data_class.get_loaders(batch_size)
 
         self.logger.info(f"Train Loader size: {len(self.train_loader.dataset)}, Val Loader size: {len(self.val_loader.dataset)}")

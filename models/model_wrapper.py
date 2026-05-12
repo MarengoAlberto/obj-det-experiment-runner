@@ -1,9 +1,12 @@
 from .fpn import FPNModel
+from .yolo import YOLO
 
 class Model:
     def __init__(self, cfg, load_model=True, *args, **kwargs):
         if cfg.model.name == "fpn":
             self.wrapper = FPNModel(cfg, load_model, *args, **kwargs)
+        elif cfg.model.name == "yolo":
+            self.wrapper = YOLO(cfg, load_model, *args, **kwargs)
         else:
             raise ValueError(f"Unknown model_type: {cfg.model.name}")
 

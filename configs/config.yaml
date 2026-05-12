@@ -1,11 +1,12 @@
 defaults:
-  - model: fpn
+  - model: yolo
   - optimizer: adamw
   - scheduler: cosine_warmup
   - dataset: data
   - experiment: baseline
-  - loss@loss.loc_loss: iou
-  - loss@loss.cls_loss: focal
+  - loss: yolo_loss
+#  - loss@loss.loc_loss: iou
+#  - loss@loss.cls_loss: focal
   - _self_
 
 project:

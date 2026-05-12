@@ -2,9 +2,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Lateral_Connection(nn.Module):
-    def __init__(self, channels_in, channels_out, **kwargs):
+    def __init__(self, channels_in, channels_out, kernel_size=1, padding=0,  **kwargs):
         super().__init__(**kwargs)
-        self.conv1x1 = nn.Conv2d(channels_in, channels_out, kernel_size=1, stride=1, padding=0)
+        self.conv1x1 = nn.Conv2d(channels_in, channels_out, kernel_size=kernel_size, stride=1, padding=padding)
 
     def forward(self, inputs):
         prev, current = inputs
