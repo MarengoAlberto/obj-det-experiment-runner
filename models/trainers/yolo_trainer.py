@@ -46,8 +46,8 @@ class YOLOTrainer(FPNTrainer):
                 total_loss = self.reduce_mean(total_loss, self.device, self.world_size)
 
             obj_loss_avg.append(obj_loss)
-            cls_loss_avg.append(loc_loss)
-            loc_loss_avg.append(cls_loss)
+            cls_loss_avg.append(cls_loss)
+            loc_loss_avg.append(loc_loss)
             total_loss_avg.append(total_loss)
 
             status = f"[Train][{i + 1}] Total Loss: {np.mean(total_loss_avg):.4f}, "
@@ -82,12 +82,14 @@ class YOLOTrainer(FPNTrainer):
 
             nms_threshold = self.cfg.model.nms_threshold if self.data_encoder else None
             score_threshold = self.cfg.model.score_threshold if self.data_encoder else None
+            max_dets = self.cfg.model.max_detections if self.data_encoder else None
             results = self.wrapper.predict(image_batch,
                                            criterion=self.criterion,
                                            y_true=targets,
                                            device=self.device,
                                            nms_threshold=nms_threshold,
-                                           score_threshold=score_threshold)
+                                           score_threshold=score_threshold,
+                                           max_dets=max_dets)
 
             predictions = results["predictions"]
             obj_loss = results["obj_loss"]

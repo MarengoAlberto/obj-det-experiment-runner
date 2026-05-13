@@ -14,12 +14,12 @@ class YOLODataEncoder:
         self.grid_sizes = []
         self.grid_centers = self.get_all_centers()
 
-    def encode(self, boxes, classes):
+    def encode(self, boxes, classes, background_id=0):
         if boxes.shape[0] == 0 and classes.shape[0] == 0:
             return torch.zeros((self.grid_centers.shape[0], 4 + 1 + 1),
                                 device=self.grid_centers.device,
                                 dtype=self.grid_centers.dtype)
-        idx, classes_assigned = self._assign_boxes_to_cells(boxes, classes)
+        idx, classes_assigned = self._assign_boxes_to_cells(boxes, classes, background_id=background_id)
         bboxes_assigned = self._assign_tensor_with_zeros(boxes, idx)
         objness = (idx >= 0).reshape(-1, 1)
         classes_assigned = classes_assigned.reshape(-1, 1)
@@ -141,15 +141,13 @@ class YOLODataEncoder:
         # distance: [num_cells, num_boxes]
         dist = torch.cdist(cell_centers, box_centers)
 
-        # for each box, pick closest cell
-        best_cell_per_box = dist.argmin(dim=0)
+        top_k = 5
+        best_cells_per_box = dist.topk(k=top_k, dim=0, largest=False).indices  # [top_k, num_boxes]
 
-        assigned_box_ids[best_cell_per_box] = torch.arange(
-            boxes.shape[0],
-            device=boxes.device
-        )
-
-        assigned_classes[best_cell_per_box] = classes.squeeze(-1)
+        for box_i in range(boxes.shape[0]):
+            cells = best_cells_per_box[:, box_i]
+            assigned_box_ids[cells] = box_i
+            assigned_classes[cells] = classes[box_i]
 
         return assigned_box_ids, assigned_classes
 
@@ -164,64 +162,38 @@ class YOLODataEncoder:
 
         return out
 
-    def _encode_boxes(self, boxes, obj_mask, variances=(0.1, 0.2)):
-        """
-        boxes: [N, 4] in xyxy format
-        obj_mask: [N] or [N, 1]
-        self.grid_centers: [N, 5] -> x, y, grid_h, grid_w, stride
-        """
+    def _encode_boxes(self, boxes, obj_mask):
+        cell_centers = self.grid_centers[:, :2].to(boxes.device)
+        strides = self.grid_centers[:, 4:5].to(boxes.device)
 
-        cell_centers = self.grid_centers[:, :2]  # [N, 2]
-        strides = self.grid_centers[:, 4:5]  # [N, 1], use stride column
+        b_wh = boxes[:, 2:] - boxes[:, :2]
+        b_ctr = boxes[:, :2] + 0.5 * b_wh
 
-        b_wh = boxes[:, 2:] - boxes[:, :2]  # [N, 2]
-        b_ctr = boxes[:, :2] + 0.5 * b_wh  # [N, 2]
+        dxdy = (b_ctr - cell_centers) / strides
+        dwdh = torch.log((b_wh / strides).clamp(min=1e-6))
 
-        dxdy = (b_ctr - cell_centers) / (strides * variances[0])
-
-        # Normalize box size by stride before taking log
-        dwdh = torch.log((b_wh / strides).clamp(min=1e-6)) / variances[1]
-
-        if obj_mask.ndim == 1:
-            obj_mask_expanded = obj_mask[:, None]
-        else:
-            obj_mask_expanded = obj_mask
+        obj_mask_expanded = obj_mask[:, None] if obj_mask.ndim == 1 else obj_mask
 
         dxdy = dxdy.masked_fill(~obj_mask_expanded.bool(), 0)
         dwdh = dwdh.masked_fill(~obj_mask_expanded.bool(), 0)
 
         return torch.cat([dxdy, dwdh], dim=1)
 
-    def _decode_boxes(self, deltas, classes, obj_mask, variances=(0.1, 0.2)):
-        """
-        deltas: [N, 4]
-        classes: [N, ...]
-        obj_mask: [N] or [N, 1]
-        self.grid_centers: [N, 5] -> x, y, grid_h, grid_w, stride
-        """
+    def _decode_boxes(self, deltas, classes, obj_mask):
         device = deltas.device
-        cell_centers = self.grid_centers[:, :2].to(device)  # [N, 2]
-        strides = self.grid_centers[:, 4:5].to(device)  # [N, 1], use stride column
+        cell_centers = self.grid_centers[:, :2].to(device)
+        strides = self.grid_centers[:, 4:5].to(device)
 
-        dxy = deltas[:, :2] * variances[0]
-        dwh = deltas[:, 2:] * variances[1]
+        dxy = deltas[:, :2]
+        dwh = deltas[:, 2:]
 
         p_ctr = cell_centers + dxy * strides
-
-        # Reverse of log(b_wh / stride)
         p_wh = dwh.clamp(min=-4.0, max=4.0).exp() * strides
 
         half = 0.5 * p_wh
         decoded_boxes = torch.cat([p_ctr - half, p_ctr + half], dim=1)
 
-        obj_mask = obj_mask >= 0.5
-
-        if obj_mask.ndim > 1:
-            keep = obj_mask.squeeze(-1)
-        else:
-            keep = obj_mask
-
-        return decoded_boxes[keep], classes[keep], obj_mask[keep]
+        return decoded_boxes, classes, obj_mask
 
 class DataEncoder:
     def __init__(self, input_size=(300, 300), classes=("__background__", "person")):

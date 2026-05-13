@@ -132,9 +132,24 @@ class YOLODetectionLoss(nn.Module):
         tgt_cls = target_encoded[:, 5].long()
 
         pos_mask = tgt_obj > 0.5
+        neg_mask = ~pos_mask
 
         if self.obj_loss == "focal":
-            loss_obj = sigmoid_focal_loss(pred_obj, tgt_obj, alpha=self.focal_alpha, gamma=self.focal_gamma)
+            loss_obj_pos = sigmoid_focal_loss(
+                pred_obj[pos_mask], tgt_obj[pos_mask],
+                alpha=self.focal_alpha,
+                gamma=self.focal_gamma,
+                reduction="mean",
+            ) if pos_mask.any() else pred_obj.new_tensor(0.0)
+
+            loss_obj_neg = sigmoid_focal_loss(
+                pred_obj[neg_mask], tgt_obj[neg_mask],
+                alpha=self.focal_alpha,
+                gamma=self.focal_gamma,
+                reduction="mean",
+            ) if neg_mask.any() else pred_obj.new_tensor(0.0)
+
+            loss_obj = loss_obj_pos + 0.25 * loss_obj_neg
         elif self.obj_loss == "bce":
             loss_obj = F.binary_cross_entropy_with_logits(pred_obj, tgt_obj)
         else:

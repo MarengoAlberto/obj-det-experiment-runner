@@ -295,12 +295,11 @@ class YoloDataset(FPNDataset):
 
         transformed_boxes = torch.tensor(transformed_boxes, dtype=torch.float)
         transformed_labels = torch.tensor(transformed_labels, dtype=torch.int)
-
-        # ===========================================================
-        # Generate Encoded bounding boxes and labels
-        # ===========================================================
-
-        encoded = self.encoder.encode(transformed_boxes, transformed_labels)
+        if len(self.classes) == 1:
+            transformed_labels = transformed_labels - 1
+            encoded = self.encoder.encode(transformed_boxes, transformed_labels, background_id=-1)
+        else:
+            encoded = self.encoder.encode(transformed_boxes, transformed_labels)
 
         original_size = torch.tensor((height, width), dtype=torch.int)
 

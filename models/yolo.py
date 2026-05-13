@@ -15,6 +15,7 @@ class YOLO(FPNModel):
                 criterion=None,
                 nms_threshold=None,
                 score_threshold=None,
+                max_dets=None,
                 device=None):
 
         loc_device = device or self.device
@@ -40,7 +41,8 @@ class YOLO(FPNModel):
             for idx in range(image_batch.shape[0]):
                 prediction_data = self.data_encoder.decode(logits[idx],
                                                            nms_threshold=nms_threshold or self.cfg.model.nms_threshold,
-                                                           score_threshold=score_threshold or self.cfg.model.score_threshold)
+                                                           score_threshold=score_threshold or self.cfg.model.score_threshold,
+                                                           max_dets=max_dets or self.cfg.model.max_detections)
                 pred_bbox = prediction_data[:, :4]
                 pred_conf = prediction_data[:, 4]
                 pred_cls_id = prediction_data[:, 5]
