@@ -1,11 +1,12 @@
 import os
+import time
 import yaml
 import torch
 import numbers
 import numpy as np
 import requests
 import zipfile
-from typing import Union
+from typing import Union, cast
 from box import Box
 from collections.abc import Mapping
 
@@ -41,63 +42,98 @@ def download_and_unzip_zip(url: str, extract_dir: str = 'dataset', zip_name: Uni
     os.makedirs(extract_dir, exist_ok=True)
     url = _direct_download_url(url)
 
-    if zip_name is None:
-        zip_name = "dataset.zip"
+    zip_name_str = "dataset.zip" if zip_name is None else str(zip_name)
 
-    zip_path = os.path.join(extract_dir, zip_name)
+    zip_path = os.path.join(extract_dir, zip_name_str)
+    lock_path = os.path.join(extract_dir, ".download.lock")
+    ready_marker = os.path.join(extract_dir, ".extract_complete")
 
-    # If already extracted, nothing to do
-    if os.path.isdir(extract_dir) and os.listdir(extract_dir):
+    # Explicit completion marker avoids false positives when the folder contains only a partial zip.
+    if os.path.exists(ready_marker):
         print(f"✅ Already extracted: {extract_dir}")
         return extract_dir
 
-    # (Re)download if file missing or not a valid zip
-    need_download = True
-    if os.path.exists(zip_path):
-        # Quick validity check
+    # Serialize download+extract across local processes (DDP workers on the same node).
+    lock_fd = None
+    start_wait = time.time()
+    lock_timeout = max(timeout * 5, 300)
+    while True:
         try:
-            with open(zip_path, "rb") as f:
-                magic = f.read(4)
-            if magic == b"PK\x03\x04" and zipfile.is_zipfile(zip_path):
-                need_download = False
-            else:
-                print("⚠️ Existing file is not a valid ZIP. Re-downloading...")
-        except Exception:
-            print("⚠️ Could not read existing file. Re-downloading...")
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(lock_fd, str(os.getpid()).encode("utf-8"))
+            break
+        except FileExistsError:
+            if os.path.exists(ready_marker):
+                print(f"✅ Already extracted by another worker: {extract_dir}")
+                return extract_dir
+            if time.time() - start_wait > lock_timeout:
+                raise TimeoutError(f"Timed out waiting for dataset lock: {lock_path}")
+            time.sleep(0.5)
 
-    if need_download:
-        tmp_path = zip_path + ".partial"
-        # clean up any partial
+    try:
+        # Another process may have completed extraction while we were waiting.
+        if os.path.exists(ready_marker):
+            print(f"✅ Already extracted by another worker: {extract_dir}")
+            return extract_dir
+
+        # (Re)download if file missing or not a valid zip
+        need_download = True
+        if os.path.exists(zip_path):
+            # Quick validity check
+            try:
+                with open(zip_path, "rb") as f:
+                    magic = f.read(4)
+                if magic == b"PK\x03\x04" and zipfile.is_zipfile(zip_path):
+                    need_download = False
+                else:
+                    print("⚠️ Existing file is not a valid ZIP. Re-downloading...")
+            except Exception:
+                print("⚠️ Could not read existing file. Re-downloading...")
+
+        if need_download:
+            tmp_path = zip_path + ".partial"
+            # clean up any partial
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+
+            print(f"⬇️  Downloading: {url}")
+            with requests.get(url, stream=True, timeout=timeout) as r:
+                r.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1 << 20):  # 1MB chunks
+                        if chunk:
+                            f.write(chunk)
+            os.replace(tmp_path, zip_path)
+            print(f"✅ Downloaded to: {zip_path}")
+
+            # Validate ZIP after download
+            with open(zip_path, "rb") as f:
+                if f.read(4) != b"PK\x03\x04" or not zipfile.is_zipfile(zip_path):
+                    raise ValueError(
+                        "Downloaded file is not a valid ZIP. "
+                        "If this is a Dropbox/Drive link, ensure it's a direct download (e.g., ?dl=1)."
+                    )
+
+        # Unzip
+        print(f"📂 Extracting to: {extract_dir}")
+        os.makedirs(extract_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+
+        # Marker is written only after successful extraction.
+        with open(ready_marker, "w", encoding="utf-8") as f:
+            f.write("ok\n")
+        print("✅ Extraction complete")
+        return extract_dir
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
         try:
-            os.remove(tmp_path)
+            os.remove(lock_path)
         except FileNotFoundError:
             pass
-
-        print(f"⬇️  Downloading: {url}")
-        with requests.get(url, stream=True, timeout=timeout) as r:
-            r.raise_for_status()
-            with open(tmp_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1 << 20):  # 1MB chunks
-                    if chunk:
-                        f.write(chunk)
-        os.replace(tmp_path, zip_path)
-        print(f"✅ Downloaded to: {zip_path}")
-
-        # Validate ZIP after download
-        with open(zip_path, "rb") as f:
-            if f.read(4) != b"PK\x03\x04" or not zipfile.is_zipfile(zip_path):
-                raise ValueError(
-                    "Downloaded file is not a valid ZIP. "
-                    "If this is a Dropbox/Drive link, ensure it's a direct download (e.g., ?dl=1)."
-                )
-
-    # Unzip
-    print(f"📂 Extracting to: {extract_dir}")
-    os.makedirs(extract_dir, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(extract_dir)
-    print("✅ Extraction complete")
-    return extract_dir
 
 def check_data_exists(data_path: str, data_dir: str = 'dataset'):
 
@@ -108,7 +144,12 @@ def check_data_exists(data_path: str, data_dir: str = 'dataset'):
     url = data['metadata']['url']
     train_folder = os.path.join(data_dir, data['train'].replace('../', ''))
     val_folder = os.path.join(data_dir, data['val'].replace('../', ''))
-    if os.path.isdir(train_folder) and os.listdir(val_folder):
+    if (
+        os.path.isdir(train_folder)
+        and os.path.isdir(val_folder)
+        and bool(os.listdir(train_folder))
+        and bool(os.listdir(val_folder))
+    ):
         needs_download = False
     data['full_train_path'] = train_folder
     data['full_val_path'] = val_folder
@@ -164,7 +205,7 @@ def merge_metric_dicts(*dicts: Mapping, prefix_conflicts: bool = False) -> dict[
                 raise KeyError(f"Duplicate metric key: {key}")
             num_value = to_python_number(value)
             if num_value is not None:
-                merged[key] = num_value
+                merged[key] = cast(float, num_value)
 
     return merged
 
