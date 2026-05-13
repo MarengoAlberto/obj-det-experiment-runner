@@ -186,8 +186,13 @@ class FPNTrainer(BaseTrainer):
     def is_main_process(self, rank: int):
         return rank == 0
 
+    def to_float_tensor(self, value, device):
+        if torch.is_tensor(value):
+            return value.detach().to(device=device, dtype=torch.float32)
+        return torch.tensor(value, device=device, dtype=torch.float32)
+
     def reduce_mean(self, value: torch.Tensor, device: torch.device, world_size: int):
-        t = value.to(device=device, dtype=torch.float32)
+        t = self.to_float_tensor(value, device)
         dist.all_reduce(t, op=dist.ReduceOp.SUM)
         return (t / world_size).item()
 
