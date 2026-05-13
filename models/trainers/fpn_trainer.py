@@ -142,7 +142,7 @@ class FPNTrainer(BaseTrainer):
         # MODEL setup for DDP
         self.model = self.model.to(self.device)
         if self.use_ddp:
-            self.model = DDP(self.model, device_ids=[self.local_rank], output_device=self.local_rank)
+            self.model = DDP(self.model, device_ids=[self.local_rank], output_device=self.local_rank, find_unused_parameters=True)
             self.logger.info(f'DDP: {self.model}')
 
         # OPTIMIZER Initialization

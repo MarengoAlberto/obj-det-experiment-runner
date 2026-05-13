@@ -8,7 +8,18 @@ from .logger import get_logger
 
 load_dotenv()
 
-wandb_key = os.getenv('WANDB_KEY')
+def get_from_proc1_env(name: str) -> str | None:
+    try:
+        with open("/proc/1/environ", "rb") as f:
+            entries = f.read().split(b"\0")
+        for entry in entries:
+            key, _, value = entry.partition(b"=")
+            if key.decode() == name:
+                return value.decode()
+    except Exception:
+        return None
+
+wandb_key = os.getenv("WANDB_KEY") or get_from_proc1_env("WANDB_KEY")
 
 class Wandb:
 
@@ -27,8 +38,16 @@ class Wandb:
                 mode="online" if self.cfg.experiment.train.use_wandb else "disabled",
                 config=self.get_config(),
             )
+            self.enabled = self.run is not None
+            return self
+
         except Exception as e:
-            self.logger.warning("Failed to initialize Weights & Biases. Please check your WANDB_KEY and internet connection. Error: {}".format(e))
+            self.logger.warning(
+                "Failed to initialize Weights & Biases. "
+                "Please check your WANDB_KEY and internet connection. "
+                f"Error: {e}"
+            )
+            return None
 
     def log(self, data):
 
