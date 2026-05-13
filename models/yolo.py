@@ -104,5 +104,8 @@ class YOLO(FPNModel):
             status = f"[Validation][{i+1}]"
 
             iterator.set_description(status)
-
+        if self.model.name == "yolo":
+            cat_id = int(self.cfg.data.nc) - 1
+            cat_name = self.cfg.data.classes[cat_id]
+            return utils.coco_eval(true_labels, preds, cat_id, cat_name)
         return utils.coco_eval(true_labels, preds)

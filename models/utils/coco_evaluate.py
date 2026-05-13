@@ -48,9 +48,9 @@ def convert_preds_xyxy_to_coco(pred_simple, cat_id=1):
             })
     return coco_dets
 
-def coco_eval(gt, preds, max_dets=(1, 10, 100), iou_type="bbox"):
-    gt_coco_dict = build_coco_from_simple(gt)
-    det_list = convert_preds_xyxy_to_coco(preds)
+def coco_eval(gt, preds, max_dets=(1, 10, 100), iou_type="bbox", cat_id=1, cat_name="Reg-plate"):
+    gt_coco_dict = build_coco_from_simple(gt, cat_id=cat_id, cat_name=cat_name)
+    det_list = convert_preds_xyxy_to_coco(preds, cat_id=cat_id)
     # Build COCO API from an in-memory dict (no need to write a file)
     coco_gt = COCO()
     coco_gt.dataset = gt_coco_dict
