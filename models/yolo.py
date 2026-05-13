@@ -28,7 +28,7 @@ class YOLO(FPNModel):
             logits = self.model(image_batch)
 
         if criterion and y_true is not None:
-            loss_results = criterion(logits, y_true)
+            loss_results = criterion(y_true, logits)
 
             obj_loss = loss_results["obj_loss"].item()
             loc_loss = loss_results["loc_loss"].item()

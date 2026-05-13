@@ -199,9 +199,9 @@ class YOLODataEncoder:
         obj_mask: [N] or [N, 1]
         self.grid_centers: [N, 5] -> x, y, grid_h, grid_w, stride
         """
-
-        cell_centers = self.grid_centers[:, :2]  # [N, 2]
-        strides = self.grid_centers[:, 4:5]  # [N, 1], use stride column
+        device = deltas.device
+        cell_centers = self.grid_centers[:, :2].to(device)  # [N, 2]
+        strides = self.grid_centers[:, 4:5].to(device)  # [N, 1], use stride column
 
         dxy = deltas[:, :2] * variances[0]
         dwh = deltas[:, 2:] * variances[1]

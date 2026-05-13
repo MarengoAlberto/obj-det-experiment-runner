@@ -26,7 +26,7 @@ class YOLOTrainer(FPNTrainer):
             # PREDICTION
             pred = self.model(image_batch)
             # LOSS CALCULATION
-            loss_results = self.criterion(pred, targets)
+            loss_results = self.criterion(targets, pred)
             loss = loss_results["total_loss"]
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
