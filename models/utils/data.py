@@ -257,6 +257,26 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
 
     return image_paths, boxes, labels, num_samples
 
+def filter_valid_boxes(boxes, labels=None, min_size=1e-6):
+    valid_boxes = []
+    valid_labels = [] if labels is not None else None
+
+    for i, box in enumerate(boxes):
+        x_min, y_min, x_max, y_max = box[:4]
+
+        width = x_max - x_min
+        height = y_max - y_min
+
+        if width > min_size and height > min_size:
+            valid_boxes.append(box)
+            if labels is not None:
+                valid_labels.append(labels[i])
+
+    if labels is not None:
+        return valid_boxes, valid_labels
+
+    return valid_boxes
+
 class YoloDataset(FPNDataset):
 
     def __init__(self, *args, **kwargs):
@@ -274,6 +294,7 @@ class YoloDataset(FPNDataset):
         width = img.shape[1]
 
         if self.transforms:
+            indexed_boxes, indexed_labels = filter_valid_boxes(indexed_boxes, indexed_labels)
             transformed = self.transforms(image=img, bboxes=indexed_boxes, category_ids=indexed_labels)
 
         else:  # Mandatory transforms to be applied.
