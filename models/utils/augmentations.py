@@ -52,6 +52,7 @@ def get_augmentations(height=300, width=300):
         bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category_ids"],
                                  min_visibility=0.01,  # drop boxes almost fully occluded
                                  min_area=4.0,  # drop tiny/degenerate boxes
+                                 filter_invalid_bboxes=True,
                                  check_each_transform=True),
     )
 
