@@ -106,6 +106,6 @@ class YOLO(FPNModel):
             iterator.set_description(status)
         if self.cfg.model.name == "yolo":
             cat_id = int(self.cfg.data.nc) - 1
-            cat_name = self.cfg.data.classes[cat_id]
+            cat_name = self.cfg.dataset.names[cat_id]
             return utils.coco_eval(true_labels, preds, cat_id, cat_name)
         return utils.coco_eval(true_labels, preds)
