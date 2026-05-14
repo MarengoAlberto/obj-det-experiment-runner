@@ -1,4 +1,4 @@
 defaults:
-  - model: trained_fpn
+  - model: trained_yolo
   - dataset: data
   - experiment: baseline

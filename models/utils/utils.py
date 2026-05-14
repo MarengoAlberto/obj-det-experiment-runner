@@ -10,7 +10,8 @@ from typing import Union, cast
 from box import Box
 from collections.abc import Mapping
 
-def load_model(model, model_folder: str, model_name: str = "my_yolo"):
+def load_model(model, model_folder: str, *args, **kwargs):
+    model_name = kwargs.get("model_name", "my_yolo")
     path = os.path.join(model_folder, f"{model_name}.pth")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found at: {path}")
