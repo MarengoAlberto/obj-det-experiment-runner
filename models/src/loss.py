@@ -182,33 +182,6 @@ class YOLODetectionLoss(nn.Module):
         return total, {"obj": loss_obj.detach(), "bbox": loss_bbox.detach(), "cls": loss_cls.detach()}
 
 
-def yolo_loss(
-    pred_logits,             # [B,N,5+C] or [N,5+C]
-    target_encoded,          # [B,N,6] or [N,6]
-    *,
-    num_classes,
-    obj_loss="focal",        # "focal" | "bce"
-    cls_loss="focal",        # "focal" | "ce" | "bce"
-    box_loss="s1",           # "s1" | "l1"
-    lambda_obj=1.0,
-    lambda_bbox=5.0,
-    lambda_cls=1.0,
-    focal_alpha=0.25,
-    focal_gamma=2.0,
-):
-    return YOLODetectionLoss(
-        num_classes=num_classes,
-        obj_loss=obj_loss,
-        cls_loss=cls_loss,
-        box_loss=box_loss,
-        lambda_obj=lambda_obj,
-        lambda_bbox=lambda_bbox,
-        lambda_cls=lambda_cls,
-        focal_alpha=focal_alpha,
-        focal_gamma=focal_gamma,
-    )(pred_logits, target_encoded)
-
-
 class SmoothL1Loss(nn.Module):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
