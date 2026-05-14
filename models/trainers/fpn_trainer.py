@@ -119,14 +119,7 @@ class FPNTrainer(BaseTrainer):
 
     def _initialize_trainer(self):
 
-        # Initialize Directory
-        checkpoint_path, version = initialize_directory(self.cfg)
-        self.checkpoint_dir = Path(checkpoint_path)
-        self.version = version
-
-        self.logger.info(f"Checkpoint Directory: {self.checkpoint_dir}")
-        self.logger.info(f"Version: {self.version}")
-
+        # Check if DDP is enabled
         self.use_ddp = self.is_distributed()
 
         if self.use_ddp:
@@ -138,6 +131,16 @@ class FPNTrainer(BaseTrainer):
 
         self.set_seed(self.cfg.experiment.train.seed + self.rank)
         self.logger.info(f"Using device: {self.device}, DDP: {self.use_ddp}, Rank: {self.rank}, World Size: {self.world_size}")
+
+        # Initialize Directory on main process only
+        if self.use_ddp and self.is_main_process(self.rank):
+            self.logger.info(f"Initializing Directory on main process... {self.rank}")
+            checkpoint_path, version = initialize_directory(self.cfg)
+            self.checkpoint_dir = Path(checkpoint_path)
+            self.version = version
+
+        self.logger.info(f"Checkpoint Directory: {self.checkpoint_dir}")
+        self.logger.info(f"Version: {self.version}")
 
         # MODEL setup for DDP
         self.model = self.model.to(self.device)
