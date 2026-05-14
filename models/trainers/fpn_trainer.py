@@ -133,7 +133,7 @@ class FPNTrainer(BaseTrainer):
         self.logger.info(f"Using device: {self.device}, DDP: {self.use_ddp}, Rank: {self.rank}, World Size: {self.world_size}")
 
         # Initialize Directory on main process only
-        if self.use_ddp and self.is_main_process(self.rank):
+        if (self.use_ddp and self.is_main_process(self.rank)) or not self.use_ddp:
             self.logger.info(f"Initializing Directory on main process... {self.rank}")
             checkpoint_path, version = initialize_directory(self.cfg)
             self.checkpoint_dir = Path(checkpoint_path)
