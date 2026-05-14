@@ -1,7 +1,7 @@
 train:
   debug: true
   use_wandb: false
-  epochs: 3
+  epochs: 2
   batch_size: 16
   seed: 42
   num_workers: 2

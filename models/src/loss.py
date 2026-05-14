@@ -17,7 +17,8 @@ class Loss:
                                              lambda_bbox=cfg.loss.lambda_bbox,
                                              lambda_cls=cfg.loss.lambda_cls,
                                              focal_alpha=cfg.loss.focal_alpha,
-                                             focal_gamma=cfg.loss.focal_gamma)
+                                             focal_gamma=cfg.loss.focal_gamma,
+                                             apply_negative_mining=cfg.loss.apply_negative_mining,)
         else:
             self.loc_wt = cfg.loss.loc_loss.loss_weight
             self.cls_wt = cfg.loss.cls_loss.loss_weight
@@ -66,149 +67,6 @@ class Loss:
         else:
             raise NotImplementedError(f"Classification loss {cls_loss} not implemented yet.")
 
-
-def sigmoid_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean"):
-    targets = targets.to(dtype=logits.dtype)
-    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-    p = torch.sigmoid(logits)
-    p_t = p * targets + (1.0 - p) * (1.0 - targets)
-    alpha_t = alpha * targets + (1.0 - alpha) * (1.0 - targets)
-    loss = alpha_t * (1.0 - p_t).pow(gamma) * bce
-    if reduction == "mean":
-        return loss.mean()
-    if reduction == "sum":
-        return loss.sum()
-    return loss
-
-
-def softmax_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean"):
-    # targets: class indices [K], logits: [K, C]
-    ce = F.cross_entropy(logits, targets, reduction="none")
-    pt = torch.exp(-ce)
-    # Simple scalar alpha (same for all positive classes)
-    at = torch.full_like(pt, alpha)
-    loss = at * (1.0 - pt).pow(gamma) * ce
-    if reduction == "mean":
-        return loss.mean()
-    if reduction == "sum":
-        return loss.sum()
-    return loss
-
-
-class YOLODetectionLoss(nn.Module):
-    def __init__(self,
-                 num_classes,
-                 obj_loss="focal",
-                 cls_loss="focal",
-                 box_loss="s1",
-                 lambda_obj=1.0,
-                 lambda_bbox=5.0,
-                 lambda_cls=1.0,
-                 focal_alpha=0.25,
-                 focal_gamma=2.0):
-        super().__init__()
-        self.num_classes = int(num_classes)
-        self.obj_loss = obj_loss
-        self.cls_loss = cls_loss
-        self.box_loss = box_loss
-        self.lambda_obj = float(lambda_obj)
-        self.lambda_bbox = float(lambda_bbox)
-        self.lambda_cls = float(lambda_cls)
-        self.focal_alpha = float(focal_alpha)
-        self.focal_gamma = float(focal_gamma)
-
-    def forward(self, pred_logits, target_encoded):
-        # Accept [B, N, ...] or [N, ...]
-        if pred_logits.ndim == 3:
-            pred_logits = pred_logits.reshape(-1, pred_logits.shape[-1])
-            target_encoded = target_encoded.reshape(-1, target_encoded.shape[-1])
-
-        pred_obj = pred_logits[:, 0]
-        pred_bbox = pred_logits[:, 1:5]
-        pred_cls = pred_logits[:, 5:5 + self.num_classes]
-
-        tgt_obj = target_encoded[:, 0].to(pred_obj.dtype)
-        tgt_bbox = target_encoded[:, 1:5].to(pred_bbox.dtype)
-        tgt_cls = target_encoded[:, 5].long()
-
-        pos_mask = tgt_obj > 0.5
-        neg_mask = ~pos_mask
-
-        if self.obj_loss == "focal":
-            loss_obj_pos = sigmoid_focal_loss(
-                pred_obj[pos_mask], tgt_obj[pos_mask],
-                alpha=self.focal_alpha,
-                gamma=self.focal_gamma,
-                reduction="mean",
-            ) if pos_mask.any() else pred_obj.new_tensor(0.0)
-
-            loss_obj_neg = sigmoid_focal_loss(
-                pred_obj[neg_mask], tgt_obj[neg_mask],
-                alpha=self.focal_alpha,
-                gamma=self.focal_gamma,
-                reduction="mean",
-            ) if neg_mask.any() else pred_obj.new_tensor(0.0)
-
-            loss_obj = loss_obj_pos + 0.25 * loss_obj_neg
-        elif self.obj_loss == "bce":
-            loss_obj = F.binary_cross_entropy_with_logits(pred_obj, tgt_obj)
-        else:
-            raise ValueError(f"Unsupported obj_loss: {self.obj_loss}")
-
-        if pos_mask.any():
-            if self.box_loss == "s1":
-                loss_bbox = F.smooth_l1_loss(pred_bbox[pos_mask], tgt_bbox[pos_mask])
-            elif self.box_loss == "l1":
-                loss_bbox = F.l1_loss(pred_bbox[pos_mask], tgt_bbox[pos_mask])
-            else:
-                raise ValueError(f"Unsupported box_loss: {self.box_loss}")
-
-            if self.cls_loss == "focal":
-                loss_cls = softmax_focal_loss(
-                    pred_cls[pos_mask], tgt_cls[pos_mask], alpha=self.focal_alpha, gamma=self.focal_gamma
-                )
-            elif self.cls_loss == "ce":
-                loss_cls = F.cross_entropy(pred_cls[pos_mask], tgt_cls[pos_mask])
-            elif self.cls_loss == "bce":
-                tgt_onehot = F.one_hot(tgt_cls[pos_mask], num_classes=self.num_classes).to(pred_cls.dtype)
-                loss_cls = F.binary_cross_entropy_with_logits(pred_cls[pos_mask], tgt_onehot)
-            else:
-                raise ValueError(f"Unsupported cls_loss: {self.cls_loss}")
-        else:
-            z = pred_logits.new_tensor(0.0)
-            loss_bbox, loss_cls = z, z
-
-        total = self.lambda_obj * loss_obj + self.lambda_bbox * loss_bbox + self.lambda_cls * loss_cls
-        return total, {"obj": loss_obj.detach(), "bbox": loss_bbox.detach(), "cls": loss_cls.detach()}
-
-
-def yolo_loss(
-    pred_logits,             # [B,N,5+C] or [N,5+C]
-    target_encoded,          # [B,N,6] or [N,6]
-    *,
-    num_classes,
-    obj_loss="focal",        # "focal" | "bce"
-    cls_loss="focal",        # "focal" | "ce" | "bce"
-    box_loss="s1",           # "s1" | "l1"
-    lambda_obj=1.0,
-    lambda_bbox=5.0,
-    lambda_cls=1.0,
-    focal_alpha=0.25,
-    focal_gamma=2.0,
-):
-    return YOLODetectionLoss(
-        num_classes=num_classes,
-        obj_loss=obj_loss,
-        cls_loss=cls_loss,
-        box_loss=box_loss,
-        lambda_obj=lambda_obj,
-        lambda_bbox=lambda_bbox,
-        lambda_cls=lambda_cls,
-        focal_alpha=focal_alpha,
-        focal_gamma=focal_gamma,
-    )(pred_logits, target_encoded)
-
-
 class SmoothL1Loss(nn.Module):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -241,7 +99,6 @@ class SmoothL1Loss(nn.Module):
         loc_loss = torch.nan_to_num(loc_loss.sum() / num_pos.float())
 
         return loc_loss
-
 
 class OHEMLoss(nn.Module):
     def __init__(self, num_classes=2, neg2pos_ratio=3, **kwargs):
@@ -290,7 +147,6 @@ class OHEMLoss(nn.Module):
         cls_loss = (pos_cls_loss.sum() + neg_cls_loss.sum()) / total_pos
 
         return cls_loss
-
 
 # -----------------------------
 # Classification: Focal Loss
@@ -361,7 +217,6 @@ class FocalLoss(nn.Module):
                 alpha_t = self.alpha * targets_bin[valid_mask] + (1 - self.alpha) * (1 - targets_bin[valid_mask])
             loss = (alpha_t * (1.0 - p_t).pow(self.gamma) * ce).sum() / num_pos
             return torch.nan_to_num(loss)
-
 
 # -----------------------------
 # Regression: IoU (CIoU/GIoU)
@@ -505,3 +360,286 @@ class IoULoss(nn.Module):
         loss_vec = self._giou_ciou_loss(pred, tgt)  # [num_pos]
         loss = torch.nan_to_num(loss_vec.sum() / num_pos)
         return loss
+
+def sigmoid_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean"):
+    targets = targets.to(dtype=logits.dtype)
+    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    p = torch.sigmoid(logits)
+    p_t = p * targets + (1.0 - p) * (1.0 - targets)
+    alpha_t = alpha * targets + (1.0 - alpha) * (1.0 - targets)
+    loss = alpha_t * (1.0 - p_t).pow(gamma) * bce
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    return loss
+
+def softmax_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean"):
+    # targets: class indices [K], logits: [K, C]
+    ce = F.cross_entropy(logits, targets, reduction="none")
+    pt = torch.exp(-ce)
+    # Simple scalar alpha (same for all positive classes)
+    at = torch.full_like(pt, alpha)
+    loss = at * (1.0 - pt).pow(gamma) * ce
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    return loss
+
+class YOLODetectionLoss(nn.Module):
+    def __init__(self,
+                 num_classes,
+                 obj_loss="focal",
+                 cls_loss="focal",
+                 box_loss="s1",
+                 lambda_obj=1.0,
+                 lambda_bbox=5.0,
+                 lambda_cls=1.0,
+                 focal_alpha=0.25,
+                 focal_gamma=2.0,
+                 apply_negative_mining=False):
+        super().__init__()
+        self.num_classes = int(num_classes)
+        self.obj_loss = obj_loss
+        self.cls_loss = cls_loss
+        self.box_loss = box_loss
+        self.lambda_obj = float(lambda_obj)
+        self.lambda_bbox = float(lambda_bbox)
+        self.lambda_cls = float(lambda_cls)
+        self.focal_alpha = float(focal_alpha)
+        self.focal_gamma = float(focal_gamma)
+        self.apply_negative_mining = apply_negative_mining
+
+    # ------------------------------------------------------------------
+    # IoU-family helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_to_xyxy(boxes):
+        """
+        Convert (cx, cy, w, h) → (x1, y1, x2, y2).
+        Works for any leading batch dims.
+        """
+        cx, cy, w, h = boxes.unbind(-1)
+        return torch.stack([cx - w / 2, cy - h / 2,
+                             cx + w / 2, cy + h / 2], dim=-1)
+
+    @staticmethod
+    def _iou_base(pred_xyxy, tgt_xyxy):
+        """
+        Returns (iou, intersection, union, pred_area, tgt_area)
+        for matched pairs — no cross-product.
+        """
+        inter_x1 = torch.max(pred_xyxy[:, 0], tgt_xyxy[:, 0])
+        inter_y1 = torch.max(pred_xyxy[:, 1], tgt_xyxy[:, 1])
+        inter_x2 = torch.min(pred_xyxy[:, 2], tgt_xyxy[:, 2])
+        inter_y2 = torch.min(pred_xyxy[:, 3], tgt_xyxy[:, 3])
+
+        inter_w = (inter_x2 - inter_x1).clamp(min=0)
+        inter_h = (inter_y2 - inter_y1).clamp(min=0)
+        intersection = inter_w * inter_h
+
+        pred_area = (pred_xyxy[:, 2] - pred_xyxy[:, 0]).clamp(min=0) * \
+                    (pred_xyxy[:, 3] - pred_xyxy[:, 1]).clamp(min=0)
+        tgt_area  = (tgt_xyxy[:, 2]  - tgt_xyxy[:, 0]).clamp(min=0) * \
+                    (tgt_xyxy[:, 3]  - tgt_xyxy[:, 1]).clamp(min=0)
+
+        union = pred_area + tgt_area - intersection + 1e-7
+        iou   = intersection / union
+
+        return iou, intersection, union, pred_area, tgt_area
+
+    def _giou_loss(self, pred, tgt):
+        """
+        GIoU loss = 1 - GIoU
+        Penalises non-overlapping boxes via the smallest enclosing box.
+        Good general replacement for Smooth-L1.
+        """
+        pred_xyxy = self._decode_to_xyxy(pred)
+        tgt_xyxy  = self._decode_to_xyxy(tgt)
+
+        iou, _, union, _, _ = self._iou_base(pred_xyxy, tgt_xyxy)
+
+        # Enclosing box
+        enc_x1 = torch.min(pred_xyxy[:, 0], tgt_xyxy[:, 0])
+        enc_y1 = torch.min(pred_xyxy[:, 1], tgt_xyxy[:, 1])
+        enc_x2 = torch.max(pred_xyxy[:, 2], tgt_xyxy[:, 2])
+        enc_y2 = torch.max(pred_xyxy[:, 3], tgt_xyxy[:, 3])
+
+        enc_area = (enc_x2 - enc_x1).clamp(min=0) * \
+                   (enc_y2 - enc_y1).clamp(min=0) + 1e-7
+
+        giou = iou - (enc_area - union) / enc_area
+        return (1 - giou).mean()
+
+    def _diou_loss(self, pred, tgt):
+        """
+        DIoU loss = 1 - DIoU
+        Adds a centre-distance penalty on top of IoU.
+        Converges faster than GIoU, especially when boxes don't overlap.
+        """
+        pred_xyxy = self._decode_to_xyxy(pred)
+        tgt_xyxy  = self._decode_to_xyxy(tgt)
+
+        iou, _, _, _, _ = self._iou_base(pred_xyxy, tgt_xyxy)
+
+        # Centre distance²
+        pred_cx = (pred_xyxy[:, 0] + pred_xyxy[:, 2]) / 2
+        pred_cy = (pred_xyxy[:, 1] + pred_xyxy[:, 3]) / 2
+        tgt_cx  = (tgt_xyxy[:, 0]  + tgt_xyxy[:, 2])  / 2
+        tgt_cy  = (tgt_xyxy[:, 1]  + tgt_xyxy[:, 3])  / 2
+        centre_dist2 = (pred_cx - tgt_cx) ** 2 + (pred_cy - tgt_cy) ** 2
+
+        # Diagonal of enclosing box²
+        enc_x1 = torch.min(pred_xyxy[:, 0], tgt_xyxy[:, 0])
+        enc_y1 = torch.min(pred_xyxy[:, 1], tgt_xyxy[:, 1])
+        enc_x2 = torch.max(pred_xyxy[:, 2], tgt_xyxy[:, 2])
+        enc_y2 = torch.max(pred_xyxy[:, 3], tgt_xyxy[:, 3])
+        diag2  = (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2 + 1e-7
+
+        diou = iou - centre_dist2 / diag2
+        return (1 - diou).mean()
+
+    def _ciou_loss(self, pred, tgt):
+        """
+        CIoU loss = 1 - CIoU
+        Extends DIoU with an aspect-ratio consistency term v.
+        Best overall localization loss — use this if unsure.
+        """
+        pred_xyxy = self._decode_to_xyxy(pred)
+        tgt_xyxy  = self._decode_to_xyxy(tgt)
+
+        iou, _, _, _, _ = self._iou_base(pred_xyxy, tgt_xyxy)
+
+        # Centre distance² / enclosing diagonal²  (same as DIoU)
+        pred_cx = (pred_xyxy[:, 0] + pred_xyxy[:, 2]) / 2
+        pred_cy = (pred_xyxy[:, 1] + pred_xyxy[:, 3]) / 2
+        tgt_cx  = (tgt_xyxy[:, 0]  + tgt_xyxy[:, 2])  / 2
+        tgt_cy  = (tgt_xyxy[:, 1]  + tgt_xyxy[:, 3])  / 2
+        centre_dist2 = (pred_cx - tgt_cx) ** 2 + (pred_cy - tgt_cy) ** 2
+
+        enc_x1 = torch.min(pred_xyxy[:, 0], tgt_xyxy[:, 0])
+        enc_y1 = torch.min(pred_xyxy[:, 1], tgt_xyxy[:, 1])
+        enc_x2 = torch.max(pred_xyxy[:, 2], tgt_xyxy[:, 2])
+        enc_y2 = torch.max(pred_xyxy[:, 3], tgt_xyxy[:, 3])
+        diag2  = (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2 + 1e-7
+
+        # Aspect-ratio consistency term
+        pred_w = (pred_xyxy[:, 2] - pred_xyxy[:, 0]).clamp(min=1e-7)
+        pred_h = (pred_xyxy[:, 3] - pred_xyxy[:, 1]).clamp(min=1e-7)
+        tgt_w  = (tgt_xyxy[:, 2]  - tgt_xyxy[:, 0]).clamp(min=1e-7)
+        tgt_h  = (tgt_xyxy[:, 3]  - tgt_xyxy[:, 1]).clamp(min=1e-7)
+
+        v = (4 / (math.pi ** 2)) * (
+            torch.atan(tgt_w / tgt_h) - torch.atan(pred_w / pred_h)
+        ) ** 2
+
+        with torch.no_grad():
+            alpha_ciou = v / (1 - iou + v + 1e-7)  # trade-off weight
+
+        ciou = iou - centre_dist2 / diag2 - alpha_ciou * v
+        return (1 - ciou).mean()
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
+    def forward(self, pred_logits, target_encoded):
+        if pred_logits.ndim == 3:
+            pred_logits    = pred_logits.reshape(-1, pred_logits.shape[-1])
+            target_encoded = target_encoded.reshape(-1, target_encoded.shape[-1])
+
+        pred_obj  = pred_logits[:, 0]
+        pred_bbox = pred_logits[:, 1:5]
+        pred_cls  = pred_logits[:, 5:5 + self.num_classes]
+
+        tgt_obj  = target_encoded[:, 0].to(pred_obj.dtype)
+        tgt_bbox = target_encoded[:, 1:5].to(pred_bbox.dtype)
+        tgt_cls  = target_encoded[:, 5].long()
+
+        pos_mask = tgt_obj > 0.5
+        neg_mask = ~pos_mask
+
+        # ---- objectness loss ----
+        if self.obj_loss == "focal":
+            loss_obj_pos = sigmoid_focal_loss(
+                pred_obj[pos_mask], tgt_obj[pos_mask],
+                alpha=self.focal_alpha, gamma=self.focal_gamma, reduction="mean",
+            ) if pos_mask.any() else pred_obj.new_tensor(0.0)
+
+            if self.apply_negative_mining:
+                hard_neg_mask = self._hard_negative_mining(pred_obj, neg_mask)
+                active_neg    = hard_neg_mask
+            else:
+                active_neg = neg_mask
+
+            loss_obj_neg = sigmoid_focal_loss(
+                pred_obj[active_neg], tgt_obj[active_neg],
+                alpha=self.focal_alpha, gamma=self.focal_gamma, reduction="mean",
+            ) if active_neg.any() else pred_obj.new_tensor(0.0)
+
+            loss_obj = loss_obj_pos + 0.25 * loss_obj_neg
+
+        elif self.obj_loss == "bce":
+            loss_obj = F.binary_cross_entropy_with_logits(pred_obj, tgt_obj)
+        else:
+            raise ValueError(f"Unsupported obj_loss: {self.obj_loss}")
+
+        # ---- box + cls loss (positives only) ----
+        if pos_mask.any():
+            p = pred_bbox[pos_mask]
+            t = tgt_bbox[pos_mask]
+
+            if   self.box_loss == "s1":   loss_bbox = F.smooth_l1_loss(p, t)
+            elif self.box_loss == "l1":   loss_bbox = F.l1_loss(p, t)
+            elif self.box_loss == "giou": loss_bbox = self._giou_loss(p, t)
+            elif self.box_loss == "diou": loss_bbox = self._diou_loss(p, t)
+            elif self.box_loss == "ciou": loss_bbox = self._ciou_loss(p, t)
+            else: raise ValueError(f"Unsupported box_loss: {self.box_loss}")
+
+            if self.cls_loss == "focal":
+                loss_cls = softmax_focal_loss(
+                    pred_cls[pos_mask], tgt_cls[pos_mask],
+                    alpha=self.focal_alpha, gamma=self.focal_gamma)
+            elif self.cls_loss == "ce":
+                loss_cls = F.cross_entropy(pred_cls[pos_mask], tgt_cls[pos_mask])
+            elif self.cls_loss == "bce":
+                tgt_onehot = F.one_hot(tgt_cls[pos_mask],
+                                       num_classes=self.num_classes).to(pred_cls.dtype)
+                loss_cls = F.binary_cross_entropy_with_logits(
+                    pred_cls[pos_mask], tgt_onehot)
+            else:
+                raise ValueError(f"Unsupported cls_loss: {self.cls_loss}")
+        else:
+            z = pred_logits.new_tensor(0.0)
+            loss_bbox, loss_cls = z, z
+
+        total = (self.lambda_obj  * loss_obj  +
+                 self.lambda_bbox * loss_bbox +
+                 self.lambda_cls  * loss_cls)
+
+        return total, {
+            "obj":  loss_obj.detach(),
+            "bbox": loss_bbox.detach(),
+            "cls":  loss_cls.detach(),
+        }
+
+    # ------------------------------------------------------------------
+    # Hard negative mining
+    # ------------------------------------------------------------------
+
+    def _hard_negative_mining(self, pred_obj, neg_mask, topk_ratio=0.1, min_negatives=256):
+        if not neg_mask.any():
+            return neg_mask
+
+        neg_scores = pred_obj[neg_mask].detach().sigmoid()
+        n_hard = min(max(min_negatives, int(topk_ratio * neg_scores.numel())),
+                     neg_scores.numel())
+
+        _, hard_idx   = neg_scores.topk(n_hard)
+        hard_neg_mask = torch.zeros_like(neg_mask)
+        neg_indices   = neg_mask.nonzero(as_tuple=False).squeeze(1)
+        hard_neg_mask[neg_indices[hard_idx]] = True
+
+        return hard_neg_mask

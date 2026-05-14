@@ -6,8 +6,8 @@ returned_layers: [2, 3, 4]
 train_backbone: true
 
 nms_threshold: 0.55
-score_threshold: 0.05
-max_detections: 100
+score_threshold: 0.5
+max_detections: 10
 
 metadata:
   best_model_folder: trained_model
