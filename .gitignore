@@ -4,6 +4,7 @@ dataset/
 samples/
 checkpoints/
 wandb/
+experiments/
 
 *.DS_Store
 *.log

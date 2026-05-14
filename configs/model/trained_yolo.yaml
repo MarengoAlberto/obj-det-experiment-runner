@@ -1,8 +1,8 @@
 name: yolo
 image_size: [512, 512, 3]
-backbone_name: resnet18
-fpn_channels: 256
-returned_layers: [2, 3, 4]
+backbone_name: resnet34
+fpn_channels: 384
+returned_layers: [1, 2, 3, 4]
 train_backbone: true
 
 nms_threshold: 0.55

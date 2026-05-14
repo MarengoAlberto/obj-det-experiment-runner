@@ -12,3 +12,4 @@ matplotlib
 python-box
 pyyaml
 python-dotenv
+pandas
