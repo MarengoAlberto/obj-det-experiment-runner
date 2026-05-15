@@ -420,14 +420,9 @@ class YOLODetectionLoss(nn.Module):
     # ------------------------------------------------------------------
 
     def _decode_deltas_to_cxcywh(self, deltas, pos_mask):
-        """
-        Decode (dx, dy, dw, dh) deltas back to absolute (cx, cy, w, h)
-        using the grid centers for the positive positions only.
-        Mirrors YOLODataEncoder._decode_boxes exactly.
-        """
-        gc = self.grid_centers[pos_mask]  # [N_pos, 5]  (cx, cy, gh, gw, stride)
-        cell_centers = gc[:, :2]  # absolute cx, cy of each cell
-        strides = gc[:, 4:5]  # stride for each cell
+        gc = self.grid_centers.to(deltas.device)[pos_mask]
+        cell_centers = gc[:, :2]
+        strides = gc[:, 4:5]
 
         dxy = deltas[:, :2]
         dwh = deltas[:, 2:]
