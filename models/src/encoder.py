@@ -114,17 +114,23 @@ class YOLODataEncoder:
 
     def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
         cell_centers = self.grid_centers[:, :2]
-        strides = self.grid_centers[:, 4:5].squeeze()
+        strides = self.grid_centers[:, 4].squeeze()  # shape [N]
+
+        classes = torch.as_tensor(classes, dtype=torch.long, device=boxes.device)
 
         box_centers = torch.stack([
             (boxes[:, 0] + boxes[:, 2]) / 2,
             (boxes[:, 1] + boxes[:, 3]) / 2,
         ], dim=1)
 
-        dist = torch.cdist(cell_centers, box_centers)  # [num_cells, num_boxes]
+        assigned_box_ids = torch.full(
+            (cell_centers.shape[0],), -1, dtype=torch.long, device=boxes.device
+        )
+        assigned_classes = torch.full(
+            (cell_centers.shape[0],), background_id, dtype=torch.long, device=boxes.device
+        )
 
-        assigned_box_ids = torch.full((cell_centers.shape[0],), -1, dtype=torch.long)
-        assigned_classes = torch.full((cell_centers.shape[0],), background_id, dtype=torch.long)
+        dist = torch.cdist(cell_centers.to(boxes.device), box_centers)
 
         top_k = 5
         best_cells_per_box = dist.topk(k=top_k, dim=0, largest=False).indices
@@ -132,14 +138,12 @@ class YOLODataEncoder:
         for box_i in range(boxes.shape[0]):
             cells = best_cells_per_box[:, box_i]
 
-            # ← NEW: only keep cells within 1.5 strides of box center
-            cell_strides = strides[cells]
+            cell_strides = strides[cells].to(boxes.device)
             cell_dist = dist[cells, box_i]
             valid = cell_dist < (1.5 * cell_strides)
             cells = cells[valid]
 
             if len(cells) == 0:
-                # fallback: always assign at least the closest cell
                 cells = best_cells_per_box[:1, box_i]
 
             assigned_box_ids[cells] = box_i
