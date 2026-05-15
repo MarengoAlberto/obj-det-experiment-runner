@@ -6,10 +6,12 @@ import torch.nn.functional as F
 class Loss:
     def __init__(self, cfg, data_encoder=None):
         self.cfg = cfg
+        assert data_encoder is not None, "data_encoder must be provided for loss calculation"
         self.data_encoder = data_encoder
         self.yolo_mode = cfg.model.name == "yolo"
         if self.yolo_mode:
             self.loss_fn = YOLODetectionLoss(num_classes=cfg.dataset.nc,
+                                             grid_centers=data_encoder.grid_centers,
                                              obj_loss=cfg.loss.obj_loss,
                                              cls_loss=cfg.loss.cls_loss,
                                              box_loss=cfg.loss.box_loss,
@@ -390,6 +392,7 @@ def softmax_focal_loss(logits, targets, alpha=0.25, gamma=2.0, reduction="mean")
 class YOLODetectionLoss(nn.Module):
     def __init__(self,
                  num_classes,
+                 grid_centers,
                  obj_loss="focal",
                  cls_loss="focal",
                  box_loss="s1",
@@ -410,10 +413,29 @@ class YOLODetectionLoss(nn.Module):
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
         self.apply_negative_mining = apply_negative_mining
+        self.register_buffer("grid_centers", grid_centers)
 
     # ------------------------------------------------------------------
     # IoU-family helpers
     # ------------------------------------------------------------------
+
+    def _decode_deltas_to_cxcywh(self, deltas, pos_mask):
+        """
+        Decode (dx, dy, dw, dh) deltas back to absolute (cx, cy, w, h)
+        using the grid centers for the positive positions only.
+        Mirrors YOLODataEncoder._decode_boxes exactly.
+        """
+        gc = self.grid_centers[pos_mask]  # [N_pos, 5]  (cx, cy, gh, gw, stride)
+        cell_centers = gc[:, :2]  # absolute cx, cy of each cell
+        strides = gc[:, 4:5]  # stride for each cell
+
+        dxy = deltas[:, :2]
+        dwh = deltas[:, 2:]
+
+        p_ctr = cell_centers + dxy * strides
+        p_wh = dwh.clamp(min=-4.0, max=4.0).exp() * strides
+
+        return torch.cat([p_ctr, p_wh], dim=1)  # (cx, cy, w, h) in pixels
 
     @staticmethod
     def _decode_to_xyxy(boxes):
@@ -591,12 +613,22 @@ class YOLODetectionLoss(nn.Module):
             p = pred_bbox[pos_mask]
             t = tgt_bbox[pos_mask]
 
-            if   self.box_loss == "s1":   loss_bbox = F.smooth_l1_loss(p, t)
-            elif self.box_loss == "l1":   loss_bbox = F.l1_loss(p, t)
-            elif self.box_loss == "giou": loss_bbox = self._giou_loss(p, t)
-            elif self.box_loss == "diou": loss_bbox = self._diou_loss(p, t)
-            elif self.box_loss == "ciou": loss_bbox = self._ciou_loss(p, t)
-            else: raise ValueError(f"Unsupported box_loss: {self.box_loss}")
+            if self.box_loss == "s1":
+                loss_bbox = F.smooth_l1_loss(p, t)
+            elif self.box_loss == "l1":
+                loss_bbox = F.l1_loss(p, t)
+            elif self.box_loss in ("giou", "diou", "ciou"):
+                # ← Decode deltas → absolute (cx,cy,w,h) before IoU geometry
+                p_dec = self._decode_deltas_to_cxcywh(p, pos_mask)
+                t_dec = self._decode_deltas_to_cxcywh(t, pos_mask)
+                if self.box_loss == "giou":
+                    loss_bbox = self._giou_loss(p_dec, t_dec)
+                elif self.box_loss == "diou":
+                    loss_bbox = self._diou_loss(p_dec, t_dec)
+                elif self.box_loss == "ciou":
+                    loss_bbox = self._ciou_loss(p_dec, t_dec)
+            else:
+                raise ValueError(f"Unsupported box_loss: {self.box_loss}")
 
             if self.cls_loss == "focal":
                 loss_cls = softmax_focal_loss(
@@ -629,7 +661,7 @@ class YOLODetectionLoss(nn.Module):
     # Hard negative mining
     # ------------------------------------------------------------------
 
-    def _hard_negative_mining(self, pred_obj, neg_mask, topk_ratio=0.1, min_negatives=256):
+    def _hard_negative_mining(self, pred_obj, neg_mask, topk_ratio=0.1, min_negatives=1024):
         if not neg_mask.any():
             return neg_mask
 
