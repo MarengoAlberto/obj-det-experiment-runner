@@ -419,8 +419,13 @@ class YOLODetectionLoss(nn.Module):
     # IoU-family helpers
     # ------------------------------------------------------------------
 
-    def _decode_deltas_to_cxcywh(self, deltas, pos_mask):
-        gc = self.grid_centers.to(deltas.device)[pos_mask]
+    def _decode_deltas_to_cxcywh(self, deltas, pos_mask, batch_size):
+        encoded_space = 4 + self.num_classes
+        # Tile grid_centers to match the flattened batch layout [B*N, 5]
+        gc_tiled = self.grid_centers.to(deltas.device).unsqueeze(0).expand(batch_size, -1, -1)
+        gc_tiled = gc_tiled.reshape(-1, encoded_space)
+        gc = gc_tiled[pos_mask]
+
         cell_centers = gc[:, :2]
         strides = gc[:, 4:5]
 
@@ -563,6 +568,9 @@ class YOLODetectionLoss(nn.Module):
     # ------------------------------------------------------------------
 
     def forward(self, pred_logits, target_encoded):
+
+        batch_size = pred_logits.shape[0] if pred_logits.ndim == 3 else 1
+
         if pred_logits.ndim == 3:
             pred_logits    = pred_logits.reshape(-1, pred_logits.shape[-1])
             target_encoded = target_encoded.reshape(-1, target_encoded.shape[-1])
@@ -614,8 +622,14 @@ class YOLODetectionLoss(nn.Module):
                 loss_bbox = F.l1_loss(p, t)
             elif self.box_loss in ("giou", "diou", "ciou"):
                 # ← Decode deltas → absolute (cx,cy,w,h) before IoU geometry
-                p_dec = self._decode_deltas_to_cxcywh(p, pos_mask)
-                t_dec = self._decode_deltas_to_cxcywh(t, pos_mask)
+                p_dec = self._decode_deltas_to_cxcywh(p, pos_mask, batch_size)
+                t_dec = self._decode_deltas_to_cxcywh(t, pos_mask, batch_size)
+                if self.box_loss == "giou":
+                    loss_bbox = self._giou_loss(p_dec, t_dec)
+                elif self.box_loss == "diou":
+                    loss_bbox = self._diou_loss(p_dec, t_dec)
+                elif self.box_loss == "ciou":
+                    loss_bbox = self._ciou_loss(p_dec, t_dec)
                 if self.box_loss == "giou":
                     loss_bbox = self._giou_loss(p_dec, t_dec)
                 elif self.box_loss == "diou":
