@@ -1,7 +1,7 @@
 obj_loss: focal       # "focal" | "bce"
-cls_loss: focal       # "focal" | "ce" | "bce"
-box_loss: ciou          # "s1" | "l1" | "giou" | "diou" | "ciou"
-lambda_obj: 1.0
+cls_loss: focal      # "focal" | "ce" | "bce"
+box_loss: s1          # "s1" | "l1" | "giou" | "diou" | "ciou"
+lambda_obj: 2.0
 lambda_cls: 0.0
 lambda_bbox: 7.0
 focal_alpha: 0.25

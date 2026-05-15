@@ -60,7 +60,7 @@ class FPNModel(BaseModel):
         ratio_h = imH / IMG_SIZE_H
         ratio_w = imW / IMG_SIZE_W
 
-        results = self.predict(trans_img["image"])
+        results = self.predict(trans_img["image"], *args, **kwargs)
 
         final_preds = []
         for pred in results['predictions']:

@@ -604,10 +604,20 @@ class YOLODetectionLoss(nn.Module):
                 alpha=self.focal_alpha, gamma=self.focal_gamma, reduction="mean",
             ) if active_neg.any() else pred_obj.new_tensor(0.0)
 
-            loss_obj = loss_obj_pos + 0.25 * loss_obj_neg
+            loss_obj = loss_obj_pos + 2.0 * loss_obj_neg
 
         elif self.obj_loss == "bce":
-            loss_obj = F.binary_cross_entropy_with_logits(pred_obj, tgt_obj)
+            loss_obj_pos = F.binary_cross_entropy_with_logits(
+                pred_obj[pos_mask], tgt_obj[pos_mask], reduction="mean"
+            ) if pos_mask.any() else pred_obj.new_tensor(0.0)
+
+            active_neg = self._hard_negative_mining(pred_obj, neg_mask) if self.apply_negative_mining else neg_mask
+
+            loss_obj_neg = F.binary_cross_entropy_with_logits(
+                pred_obj[active_neg], tgt_obj[active_neg], reduction="mean"
+            ) if active_neg.any() else pred_obj.new_tensor(0.0)
+
+            loss_obj = loss_obj_pos + loss_obj_neg
         else:
             raise ValueError(f"Unsupported obj_loss: {self.obj_loss}")
 
@@ -670,7 +680,7 @@ class YOLODetectionLoss(nn.Module):
     # Hard negative mining
     # ------------------------------------------------------------------
 
-    def _hard_negative_mining(self, pred_obj, neg_mask, topk_ratio=0.1, min_negatives=1024):
+    def _hard_negative_mining(self, pred_obj, neg_mask, topk_ratio=0.03, min_negatives=256):
         if not neg_mask.any():
             return neg_mask
 
