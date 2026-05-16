@@ -5,6 +5,10 @@ fpn_channels: 384
 returned_layers: [1, 2, 3, 4]
 train_backbone: true
 
+top_k_per_level: 1
+center_radius: 1.0
+allow_multi_level: true
+
 nms_threshold: 0.7
 score_threshold: 0.7
 max_detections: 10

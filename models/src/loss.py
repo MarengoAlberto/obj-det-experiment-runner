@@ -20,7 +20,9 @@ class Loss:
                                              lambda_cls=cfg.loss.lambda_cls,
                                              focal_alpha=cfg.loss.focal_alpha,
                                              focal_gamma=cfg.loss.focal_gamma,
-                                             apply_negative_mining=cfg.loss.apply_negative_mining,)
+                                             apply_negative_mining=cfg.loss.apply_negative_mining,
+                                             obj_neg_weight=cfg.loss.obj_neg_weight,
+                                             s1_beta=cfg.loss.s1_beta)
         else:
             self.loc_wt = cfg.loss.loc_loss.loss_weight
             self.cls_wt = cfg.loss.cls_loss.loss_weight
@@ -401,7 +403,9 @@ class YOLODetectionLoss(nn.Module):
                  lambda_cls=1.0,
                  focal_alpha=0.25,
                  focal_gamma=2.0,
-                 apply_negative_mining=False):
+                 apply_negative_mining=False,
+                 obj_neg_weight=1.0,
+                 s1_beta=1.0):
         super().__init__()
         self.num_classes = int(num_classes)
         self.obj_loss = obj_loss
@@ -413,6 +417,8 @@ class YOLODetectionLoss(nn.Module):
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
         self.apply_negative_mining = apply_negative_mining
+        self.obj_neg_weight = float(obj_neg_weight)
+        self.s1_beta = float(s1_beta)
         self.register_buffer("grid_centers", grid_centers)
 
     # ------------------------------------------------------------------
@@ -595,7 +601,7 @@ class YOLODetectionLoss(nn.Module):
 
             if self.apply_negative_mining:
                 hard_neg_mask = self._hard_negative_mining(pred_obj, neg_mask)
-                active_neg    = hard_neg_mask
+                active_neg = hard_neg_mask
             else:
                 active_neg = neg_mask
 
@@ -604,7 +610,7 @@ class YOLODetectionLoss(nn.Module):
                 alpha=self.focal_alpha, gamma=self.focal_gamma, reduction="mean",
             ) if active_neg.any() else pred_obj.new_tensor(0.0)
 
-            loss_obj = loss_obj_pos + 2.0 * loss_obj_neg
+            loss_obj = loss_obj_pos + self.obj_neg_weight * loss_obj_neg
 
         elif self.obj_loss == "bce":
             loss_obj_pos = F.binary_cross_entropy_with_logits(
@@ -617,7 +623,7 @@ class YOLODetectionLoss(nn.Module):
                 pred_obj[active_neg], tgt_obj[active_neg], reduction="mean"
             ) if active_neg.any() else pred_obj.new_tensor(0.0)
 
-            loss_obj = loss_obj_pos + loss_obj_neg
+            loss_obj = loss_obj_pos + self.obj_neg_weight * loss_obj_neg
         else:
             raise ValueError(f"Unsupported obj_loss: {self.obj_loss}")
 
@@ -627,7 +633,7 @@ class YOLODetectionLoss(nn.Module):
             t = tgt_bbox[pos_mask]
 
             if self.box_loss == "s1":
-                loss_bbox = F.smooth_l1_loss(p, t)
+                loss_bbox = F.smooth_l1_loss(p, t, beta=self.s1_beta)
             elif self.box_loss == "l1":
                 loss_bbox = F.l1_loss(p, t)
             elif self.box_loss in ("giou", "diou", "ciou"):
