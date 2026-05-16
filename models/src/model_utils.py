@@ -15,7 +15,12 @@ def get_model(cfg):
                      fpn_channels=cfg.model.fpn_channels)
         data_encoder = YOLODataEncoder(input_size=cfg.model.image_size[:2],
                                        classes=cfg.dataset.names,
-                                       strides=model.backbone.strides)
+                                       strides=model.backbone.strides,
+                                       top_k_per_level=cfg.model.top_k_per_level,
+                                       center_radius=cfg.model.center_radius,
+                                       allow_multi_level=cfg.model.allow_multi_level,
+                                       debug=cfg.experiment.train.debug,
+                                       )
     else:
         raise ValueError(f"Unknown model_type: {cfg.model.name}")
     return model, data_encoder

@@ -7,10 +7,19 @@ class YOLODataEncoder:
     def __init__(self,
                  input_size=(300, 300),
                  classes=("__background__", "person"),
-                 strides=[4, 8, 16, 32, 64, 128]):
+                 strides=[4, 8, 16, 32, 64, 128],
+                 top_k_per_level=3,
+                 center_radius=1.5,
+                 allow_multi_level=True,
+                 debug=False,):
+
         self.input_size = input_size
         self.classes = classes
         self.strides = strides
+        self.top_k_per_level = top_k_per_level
+        self.center_radius = center_radius
+        self.debug = debug
+        self.allow_multi_level = allow_multi_level
         self.grid_sizes = []
         self.grid_centers = self.get_all_centers()
 
@@ -20,6 +29,8 @@ class YOLODataEncoder:
                                 device=self.grid_centers.device,
                                 dtype=self.grid_centers.dtype)
         idx, classes_assigned = self._assign_boxes_to_cells(boxes, classes, background_id=background_id)
+        if self.debug:
+            self.debug_positive_counts_by_stride(idx)
         bboxes_assigned = self._assign_tensor_with_zeros(boxes, idx)
         objness = (idx >= 0).reshape(-1, 1)
         classes_assigned = classes_assigned.reshape(-1, 1)
@@ -112,44 +123,204 @@ class YOLODataEncoder:
             dim=1
         )
 
-    def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
-        cell_centers = self.grid_centers[:, :2]
-        strides = self.grid_centers[:, 4].squeeze()  # shape [N]
+    def _assign_boxes_to_cells(
+            self,
+            boxes,
+            classes,
+            background_id=0,
+            ):
 
-        classes = torch.as_tensor(classes, dtype=torch.long, device=boxes.device)
+        device = boxes.device
 
-        box_centers = torch.stack([
-            (boxes[:, 0] + boxes[:, 2]) / 2,
-            (boxes[:, 1] + boxes[:, 3]) / 2,
-        ], dim=1)
+        cell_centers = self.grid_centers[:, :2].to(device)  # [N, 2]
+        strides = self.grid_centers[:, 4].to(device)  # [N]
+
+        classes = torch.as_tensor(classes, dtype=torch.long, device=device)
+
+        num_cells = cell_centers.shape[0]
 
         assigned_box_ids = torch.full(
-            (cell_centers.shape[0],), -1, dtype=torch.long, device=boxes.device
+            (num_cells,), -1, dtype=torch.long, device=device
         )
         assigned_classes = torch.full(
-            (cell_centers.shape[0],), background_id, dtype=torch.long, device=boxes.device
+            (num_cells,), background_id, dtype=torch.long, device=device
         )
 
-        dist = torch.cdist(cell_centers.to(boxes.device), box_centers)
+        # Useful for conflict resolution: smaller distance wins.
+        assigned_cost = torch.full(
+            (num_cells,), float("inf"), dtype=boxes.dtype, device=device
+        )
 
-        top_k = 5
-        best_cells_per_box = dist.topk(k=top_k, dim=0, largest=False).indices
+        if boxes.numel() == 0:
+            return assigned_box_ids, assigned_classes
+
+        # GT geometry
+        box_w = (boxes[:, 2] - boxes[:, 0]).clamp(min=1.0)
+        box_h = (boxes[:, 3] - boxes[:, 1]).clamp(min=1.0)
+        box_size = torch.sqrt(box_w * box_h)
+
+        box_centers = torch.stack(
+            [
+                (boxes[:, 0] + boxes[:, 2]) * 0.5,
+                (boxes[:, 1] + boxes[:, 3]) * 0.5,
+            ],
+            dim=1,
+        )
+
+        unique_strides = sorted([int(s.item()) for s in strides.unique()])
+
+        def allowed_strides_for_box(w, h, size):
+            """
+            Tune these thresholds for 512x512 license-plate detection.
+
+            General idea:
+              tiny/far plates   -> stride 4
+              small plates      -> stride 4 or 8
+              normal plates     -> stride 8 or 16
+              large close plates -> stride 16 or 32
+            """
+
+            h = float(h)
+            w = float(w)
+            size = float(size)
+
+            # Main level by plate height / geometric size.
+            # For license plates, height is often more informative than area.
+            if h < 12:
+                main = 4
+            elif h < 24:
+                main = 8
+            elif h < 48:
+                main = 16
+            else:
+                main = 32
+
+            # Only keep levels that actually exist in this model.
+            if main not in unique_strides:
+                main = min(unique_strides, key=lambda s: abs(s - main))
+
+            if not self.allow_multi_level:
+                return [main]
+
+            # Add one adjacent level for smoother training.
+            # This avoids hard boundaries like h=23.9 vs h=24.1.
+            idx = unique_strides.index(main)
+            allowed = [main]
+
+            if idx > 0:
+                allowed.append(unique_strides[idx - 1])
+            if idx + 1 < len(unique_strides):
+                allowed.append(unique_strides[idx + 1])
+
+            # Optional: do not let very tiny plates go too coarse.
+            if h < 12:
+                allowed = [s for s in allowed if s <= 8]
+
+            # Optional: do not let very large plates go too fine.
+            if h >= 48:
+                allowed = [s for s in allowed if s >= 8]
+
+            return sorted(set(allowed))
 
         for box_i in range(boxes.shape[0]):
-            cells = best_cells_per_box[:, box_i]
+            gt_ctr = box_centers[box_i]
+            gt_w = box_w[box_i]
+            gt_h = box_h[box_i]
+            gt_size = box_size[box_i]
 
-            cell_strides = strides[cells].to(boxes.device)
-            cell_dist = dist[cells, box_i]
-            valid = cell_dist < (1.5 * cell_strides)
-            cells = cells[valid]
+            allowed = allowed_strides_for_box(gt_w, gt_h, gt_size)
 
-            if len(cells) == 0:
-                cells = best_cells_per_box[:1, box_i]
+            for stride in allowed:
+                level_mask = strides == stride
 
-            assigned_box_ids[cells] = box_i
-            assigned_classes[cells] = classes[box_i]
+                if not level_mask.any():
+                    continue
+
+                level_indices = torch.where(level_mask)[0]
+                level_centers = cell_centers[level_indices]
+
+                # Distance from each cell center on this level to GT center.
+                dist = torch.norm(level_centers - gt_ctr[None, :], dim=1)
+
+                # Keep center-near cells only.
+                valid = dist < (self.center_radius * float(stride))
+
+                if valid.any():
+                    valid_indices = level_indices[valid]
+                    valid_dist = dist[valid]
+                else:
+                    # Always assign at least one cell on allowed level.
+                    closest = torch.argmin(dist)
+                    valid_indices = level_indices[closest:closest + 1]
+                    valid_dist = dist[closest:closest + 1]
+
+                # Limit positives per GT per level.
+                k = min(self.top_k_per_level, valid_indices.numel())
+                top = torch.topk(valid_dist, k=k, largest=False)
+
+                chosen_indices = valid_indices[top.indices]
+                chosen_dist = top.values
+
+                # Conflict resolution:
+                # if two boxes want the same cell, assign to the closer GT center.
+                better = chosen_dist < assigned_cost[chosen_indices]
+
+                chosen_indices = chosen_indices[better]
+                chosen_dist = chosen_dist[better]
+
+                assigned_box_ids[chosen_indices] = box_i
+                assigned_classes[chosen_indices] = classes[box_i]
+                assigned_cost[chosen_indices] = chosen_dist
 
         return assigned_box_ids, assigned_classes
+
+    def debug_positive_counts_by_stride(self, assigned_box_ids):
+        strides = self.grid_centers[:, 4].to(assigned_box_ids.device)
+
+        for stride in sorted([int(s.item()) for s in strides.unique()]):
+            m = strides == stride
+            n_pos = (assigned_box_ids[m] >= 0).sum().item()
+            n_all = m.sum().item()
+            print(f"stride={stride:>2}: positives={n_pos:>5} / cells={n_all:>6}")
+
+    # def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
+    #     cell_centers = self.grid_centers[:, :2]
+    #     strides = self.grid_centers[:, 4].squeeze()  # shape [N]
+    #
+    #     classes = torch.as_tensor(classes, dtype=torch.long, device=boxes.device)
+    #
+    #     box_centers = torch.stack([
+    #         (boxes[:, 0] + boxes[:, 2]) / 2,
+    #         (boxes[:, 1] + boxes[:, 3]) / 2,
+    #     ], dim=1)
+    #
+    #     assigned_box_ids = torch.full(
+    #         (cell_centers.shape[0],), -1, dtype=torch.long, device=boxes.device
+    #     )
+    #     assigned_classes = torch.full(
+    #         (cell_centers.shape[0],), background_id, dtype=torch.long, device=boxes.device
+    #     )
+    #
+    #     dist = torch.cdist(cell_centers.to(boxes.device), box_centers)
+    #
+    #     top_k = 5
+    #     best_cells_per_box = dist.topk(k=top_k, dim=0, largest=False).indices
+    #
+    #     for box_i in range(boxes.shape[0]):
+    #         cells = best_cells_per_box[:, box_i]
+    #
+    #         cell_strides = strides[cells].to(boxes.device)
+    #         cell_dist = dist[cells, box_i]
+    #         valid = cell_dist < (1.5 * cell_strides)
+    #         cells = cells[valid]
+    #
+    #         if len(cells) == 0:
+    #             cells = best_cells_per_box[:1, box_i]
+    #
+    #         assigned_box_ids[cells] = box_i
+    #         assigned_classes[cells] = classes[box_i]
+    #
+    #     return assigned_box_ids, assigned_classes
 
     def _assign_tensor_with_zeros(self, tensor, idx, out_shape=4):
         # bboxes_norm: [n_boxes, 4]
