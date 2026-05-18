@@ -1,6 +1,6 @@
 obj_loss: focal       # "focal" | "bce"
 cls_loss: focal      # "focal" | "ce" | "bce"
-box_loss: ciou          # "s1" | "l1" | "giou" | "diou" | "ciou"
+box_loss: hybrid_s1_ciou         # "s1" | "l1" | "giou" | "diou" | "ciou" | "hybrid_s1_ciou"
 lambda_obj: 1.5
 lambda_cls: 0.0
 lambda_bbox: 8.0
@@ -8,4 +8,6 @@ focal_alpha: 0.25
 focal_gamma: 2.0
 apply_negative_mining: true
 obj_neg_weight: 1.5
-s1_beta: 0.25
+s1_beta: 0.5
+s1_reduction: custom_stride_weighted # "mean" | "sum" | "custom_stride_weighted"
+hybrid_ciou_weight: 0.5

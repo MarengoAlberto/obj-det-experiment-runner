@@ -22,7 +22,9 @@ class Loss:
                                              focal_gamma=cfg.loss.focal_gamma,
                                              apply_negative_mining=cfg.loss.apply_negative_mining,
                                              obj_neg_weight=cfg.loss.obj_neg_weight,
-                                             s1_beta=cfg.loss.s1_beta)
+                                             s1_beta=cfg.loss.s1_beta,
+                                             s1_reduction=cfg.loss.s1_reduction,
+                                             hybrid_ciou_weight=cfg.loss.hybrid_ciou_weight)
         else:
             self.loc_wt = cfg.loss.loc_loss.loss_weight
             self.cls_wt = cfg.loss.cls_loss.loss_weight
@@ -405,7 +407,9 @@ class YOLODetectionLoss(nn.Module):
                  focal_gamma=2.0,
                  apply_negative_mining=False,
                  obj_neg_weight=1.0,
-                 s1_beta=1.0):
+                 s1_beta=1.0,
+                 s1_reduction="mean",
+                 hybrid_ciou_weight=0.5,):
         super().__init__()
         self.num_classes = int(num_classes)
         self.obj_loss = obj_loss
@@ -419,6 +423,8 @@ class YOLODetectionLoss(nn.Module):
         self.apply_negative_mining = apply_negative_mining
         self.obj_neg_weight = float(obj_neg_weight)
         self.s1_beta = float(s1_beta)
+        self.s1_reduction = s1_reduction
+        self.hybrid_ciou_weight = float(hybrid_ciou_weight)
         self.register_buffer("grid_centers", grid_centers)
 
     # ------------------------------------------------------------------
@@ -442,6 +448,20 @@ class YOLODetectionLoss(nn.Module):
         p_wh = dwh.clamp(min=-4.0, max=4.0).exp() * strides
 
         return torch.cat([p_ctr, p_wh], dim=1)  # (cx, cy, w, h) in pixels
+
+    def _get_pos_strides(self, pos_mask, batch_size, device):
+        """
+        Returns stride for each positive prediction after pred/target flattening.
+
+        pos_mask shape: [B * N]
+        output shape: [num_pos]
+        """
+        grid_centers = self.grid_centers.to(device)  # [N, 5]
+        strides = grid_centers[:, 4]  # [N]
+
+        strides_tiled = strides.unsqueeze(0).expand(batch_size, -1).reshape(-1)
+
+        return strides_tiled[pos_mask]
 
     @staticmethod
     def _decode_to_xyxy(boxes):
@@ -569,6 +589,30 @@ class YOLODetectionLoss(nn.Module):
         ciou = iou - centre_dist2 / diag2 - alpha_ciou * v
         return (1 - ciou).mean()
 
+    def _compute_smooth_l1_bbox_loss(self, p, t, pos_mask, batch_size):
+        if self.s1_reduction in ["mean", "sum"]:
+            return F.smooth_l1_loss(p, t, beta=self.s1_beta, reduction=self.s1_reduction)
+        elif self.s1_reduction == "custom_stride_weighted":
+            pos_strides = self._get_pos_strides(
+                pos_mask=pos_mask,
+                batch_size=batch_size,
+                device=p.device,
+            )
+
+            bbox_loss_per = F.smooth_l1_loss(
+                p,
+                t,
+                beta=0.5,
+                reduction="none",
+            ).sum(dim=1)
+
+            weights = (16.0 / pos_strides).clamp(0.75, 3.0)
+
+            return (bbox_loss_per * weights).sum() / weights.sum().clamp_min(1.0)
+        else:
+            return F.smooth_l1_loss(p, t, beta=self.s1_beta)
+
+
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
@@ -633,10 +677,10 @@ class YOLODetectionLoss(nn.Module):
             t = tgt_bbox[pos_mask]
 
             if self.box_loss == "s1":
-                loss_bbox = F.smooth_l1_loss(p, t, beta=self.s1_beta)
+                loss_bbox = self._compute_smooth_l1_bbox_loss(p, t, pos_mask, batch_size)
             elif self.box_loss == "l1":
                 loss_bbox = F.l1_loss(p, t)
-            elif self.box_loss in ("giou", "diou", "ciou"):
+            elif self.box_loss in ("giou", "diou", "ciou", "hybrid_s1_ciou"):
                 # ← Decode deltas → absolute (cx,cy,w,h) before IoU geometry
                 p_dec = self._decode_deltas_to_cxcywh(p, pos_mask, batch_size)
                 t_dec = self._decode_deltas_to_cxcywh(t, pos_mask, batch_size)
@@ -646,12 +690,10 @@ class YOLODetectionLoss(nn.Module):
                     loss_bbox = self._diou_loss(p_dec, t_dec)
                 elif self.box_loss == "ciou":
                     loss_bbox = self._ciou_loss(p_dec, t_dec)
-                if self.box_loss == "giou":
-                    loss_bbox = self._giou_loss(p_dec, t_dec)
-                elif self.box_loss == "diou":
-                    loss_bbox = self._diou_loss(p_dec, t_dec)
-                elif self.box_loss == "ciou":
-                    loss_bbox = self._ciou_loss(p_dec, t_dec)
+                elif self.box_loss == "hybrid_s1_ciou":
+                    ciou_loss = self._ciou_loss(p_dec, t_dec)
+                    smooth_l1_loss = self._compute_smooth_l1_bbox_loss(p, t, pos_mask, batch_size)
+                    loss_bbox = smooth_l1_loss + self.hybrid_ciou_weight * ciou_loss
             else:
                 raise ValueError(f"Unsupported box_loss: {self.box_loss}")
 

@@ -30,7 +30,7 @@ class FPNTrainer(BaseTrainer):
     wandb = None
     device = None
     history = {"epoch": [], "train_loss": [], "val_loss": [],
-               "val_mAP": [], "val_mAP@50": []}
+               "val_mAP": [], "val_mAP@50": [], "val_mAP@75": [], "val_mAP_small": []}
 
     def __init__(self, wrapper, data, cfg, logger=None, close_when_done=False):
 
@@ -65,7 +65,7 @@ class FPNTrainer(BaseTrainer):
         self.logger.info(f"Train Loader size: {len(self.train_loader.dataset)}, Val Loader size: {len(self.val_loader.dataset)}")
         self.logger.info(f"Train Loader: {len(self.train_loader)}, Val Loader: {len(self.val_loader)}")
 
-        output_path = os.path.join(self.checkpoint_dir, self.model.__class__.__name__) + '_train.pth'
+        output_path = os.path.join(self.checkpoint_dir, "best_models")
         iterator = tqdm(range(start_epoch, epochs + start_epoch), dynamic_ncols=True)
 
         self.logger.info(f"Saving checkpoint: {output_path}")
@@ -91,18 +91,36 @@ class FPNTrainer(BaseTrainer):
                 self.history["epoch"].append(epoch)
                 self.history["train_loss"].append(output_train["total_loss"].item())
                 self.history["val_loss"].append(output_val["total_loss"].item())
-                self.history["val_mAP"].append(output_val["metrics"]["map"].numpy().item())
-                self.history["val_mAP@50"].append(output_val["metrics"]["map_50"].numpy().item())
+
+                metrics = output_val["metrics"]
+
+                val_map = metrics["map"].detach().cpu().item()
+                val_map50 = metrics["map_50"].detach().cpu().item()
+                val_map75 = metrics["map_75"].detach().cpu().item()
+                val_map_small = metrics["map_small"].detach().cpu().item()
+
+                self.history["val_mAP"].append(val_map)
+                self.history["val_mAP@50"].append(val_map50)
+                self.history["val_mAP@75"].append(val_map75)
+                self.history["val_mAP_small"].append(val_map_small)
 
                 self._end_epoch_verbose(iterator, epoch, output_train, output_val)
 
-                # Save model based on best validation mAP@50.
-                best_acc = max(self.history["val_mAP"])
-                current_acc = output_val["metrics"]["map"].numpy()
+                model_to_save = self.model.module if self.use_ddp else self.model
 
-                if current_acc >= best_acc:
-                    model_to_save = self.model.module if self.use_ddp else self.model
-                    self.save_checkpoint(output_path,  model_to_save, epoch, self.cfg)
+                # Save model based on best validation AP@[0.50:0.95].
+                if val_map >= max(self.history["val_mAP"]):
+                    self.save_checkpoint(os.path.join(output_path, "best_map"), model_to_save, epoch, self.cfg)
+
+                # Optional secondary checkpoints.
+                if val_map75 >= max(self.history["val_mAP@75"]):
+                    self.save_checkpoint(os.path.join(output_path, "best_map75"), model_to_save, epoch, self.cfg)
+
+                if val_map_small >= max(self.history["val_mAP_small"]):
+                    self.save_checkpoint(os.path.join(output_path, "best_small"), model_to_save, epoch, self.cfg)
+
+                # Always save last.
+                self.save_checkpoint(os.path.join(output_path, "last"), model_to_save, epoch, self.cfg)
 
             if self.scheduler:
                 self.scheduler.step()
@@ -200,7 +218,8 @@ class FPNTrainer(BaseTrainer):
         return (t / world_size).item()
 
     def save_checkpoint(self, path: str, model: nn.Module, epoch: int, cfg: DictConfig):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        output_path = os.path.join(path, model.__class__.__name__) + '_train.pth'
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
                 "model_state_dict": model.state_dict(),
@@ -208,7 +227,7 @@ class FPNTrainer(BaseTrainer):
                 "epoch": epoch,
                 "config": OmegaConf.to_container(cfg, resolve=True),
             },
-            path,
+            output_path,
         )
 
     def _end_epoch_verbose(self, iterator, epoch, output_train, output_test):
