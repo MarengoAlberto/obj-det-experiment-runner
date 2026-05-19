@@ -9,9 +9,9 @@ top_k_per_level: 1
 center_radius: 1.0
 allow_multi_level: true
 
-nms_threshold: 0.7
-score_threshold: 0.7
-max_detections: 10
+nms_threshold: 0.5
+score_threshold: 0.01
+max_detections: 100
 
 metadata:
   best_model_folder: trained_model
