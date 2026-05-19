@@ -24,7 +24,11 @@ class Loss:
                                              obj_neg_weight=cfg.loss.obj_neg_weight,
                                              s1_beta=cfg.loss.s1_beta,
                                              s1_reduction=cfg.loss.s1_reduction,
-                                             hybrid_ciou_weight=cfg.loss.hybrid_ciou_weight)
+                                             hybrid_ciou_weight=cfg.loss.hybrid_ciou_weight,
+                                             sw_base=cfg.loss.stride_weight.base,
+                                             sw_min=cfg.loss.stride_weight.min,
+                                             sw_max=cfg.loss.stride_weight.max,
+                                             )
         else:
             self.loc_wt = cfg.loss.loc_loss.loss_weight
             self.cls_wt = cfg.loss.cls_loss.loss_weight
@@ -409,7 +413,10 @@ class YOLODetectionLoss(nn.Module):
                  obj_neg_weight=1.0,
                  s1_beta=1.0,
                  s1_reduction="mean",
-                 hybrid_ciou_weight=0.5,):
+                 hybrid_ciou_weight=0.5,
+                 sw_base=12.0,
+                 sw_min=0.75,
+                 sw_max=2.5,):
         super().__init__()
         self.num_classes = int(num_classes)
         self.obj_loss = obj_loss
@@ -425,6 +432,9 @@ class YOLODetectionLoss(nn.Module):
         self.s1_beta = float(s1_beta)
         self.s1_reduction = s1_reduction
         self.hybrid_ciou_weight = float(hybrid_ciou_weight)
+        self.sw_base = sw_base
+        self.sw_min = sw_min
+        self.sw_max = sw_max
         self.register_buffer("grid_centers", grid_centers)
 
     # ------------------------------------------------------------------
@@ -606,7 +616,7 @@ class YOLODetectionLoss(nn.Module):
                 reduction="none",
             ).sum(dim=1)
 
-            weights = (16.0 / pos_strides).clamp(0.75, 3.0)
+            weights = (self.sw_base / pos_strides).clamp(self.sw_min, self.sw_max)
 
             return (bbox_loss_per * weights).sum() / weights.sum().clamp_min(1.0)
         else:
