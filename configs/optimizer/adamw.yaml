@@ -1,5 +1,5 @@
 name: adamw
-lr: 6.5e-4
+lr: 5e-4
 momentum: 0.9
 weight_decay: 1e-4
 beta_min: 0.9

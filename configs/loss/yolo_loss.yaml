@@ -13,6 +13,6 @@ s1_reduction: custom_stride_weighted # "mean" | "sum" | "custom_stride_weighted"
 hybrid_ciou_weight: 0.5
 
 stride_weight:
-  base: 12.0
+  base: 16.0
   min: 0.75
   max: 3.0

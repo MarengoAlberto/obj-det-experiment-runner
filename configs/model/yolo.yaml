@@ -1,6 +1,6 @@
 name: yolo
 image_size: [512, 512, 3]
-backbone_name: resnet34
+backbone_name: resnet50
 fpn_channels: 384
 returned_layers: [1, 2, 3, 4]
 train_backbone: true
