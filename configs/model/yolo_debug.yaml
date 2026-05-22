@@ -1,8 +1,8 @@
 name: yolo
-image_size: [512, 512, 3]
-backbone_name: resnet50
-fpn_channels: 384
-returned_layers: [1, 2, 3, 4]
+image_size: [300, 300, 3]
+backbone_name: resnet18
+fpn_channels: 16
+returned_layers: [3, 4]
 train_backbone: true
 attention_type: ResidualCBAM   # CBAM | ResidualCBAM | None
 
