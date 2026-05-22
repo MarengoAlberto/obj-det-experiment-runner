@@ -75,3 +75,19 @@ class CBAM(nn.Module):
         x = self.channel_attention(x)
         x = self.spatial_attention(x)
         return x
+
+class ResidualCBAM(nn.Module):
+    def __init__(self, channels: int, reduction: int = 16, spatial_kernel_size: int = 7):
+        super().__init__()
+
+        self.cbam = CBAM(
+            channels=channels,
+            reduction=reduction,
+            spatial_kernel_size=spatial_kernel_size,
+        )
+
+        # Starts as identity; model learns how much attention to use
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.gamma * self.cbam(x)

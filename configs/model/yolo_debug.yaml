@@ -4,7 +4,7 @@ backbone_name: resnet18
 fpn_channels: 16
 returned_layers: [3, 4]
 train_backbone: true
-use_attention: true
+attention_type: ResidualCBAM   # CBAM | ResidualCBAM | None
 
 top_k_per_level: 2
 center_radius: 1.0

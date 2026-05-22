@@ -3,7 +3,7 @@ from torch import nn
 
 from .backbone import DetBackbone
 from .fpn_pan import FPNPAN
-from .attention import CBAM
+from .attention import CBAM, ResidualCBAM
 
 class YOLOHeads(nn.Module):
     def __init__(self, fpn_channels=64, num_classes=2, n_scales=3, **kwargs):
@@ -52,7 +52,14 @@ class YOLO(nn.Module):
 
         super().__init__()
 
-        self.use_attention = kwargs.get("use_attention", False)
+        attention_type = kwargs.get("attention_type")
+        if attention_type is not None:
+            assert attention_type in {"CBAM", "ResidualCBAM"}
+            if attention_type == "CBAM":
+                attention_module = CBAM
+            elif attention_type == "ResidualCBAM":
+                attention_module = ResidualCBAM
+            self.use_attention = kwargs.get("use_attention", False)
 
         self.backbone = DetBackbone(
             name=backbone_name,
@@ -68,9 +75,9 @@ class YOLO(nn.Module):
 
         if self.use_attention:
             self.backbone_attention = nn.ModuleList(
-                [CBAM(channels=self.backbone.num_channels[idx]) for idx in range(len(returned_layers))]
+                [attention_module(channels=self.backbone.num_channels[idx]) for idx in range(len(returned_layers))]
             )
-            self.attention = CBAM(channels=fpn_channels,)
+            self.attention = attention_module(channels=fpn_channels,)
 
     def forward(self, inputs):
         x = self.backbone(inputs)

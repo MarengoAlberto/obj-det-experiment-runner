@@ -13,7 +13,7 @@ def get_model(cfg):
                      returned_layers=cfg.model.returned_layers,
                      num_classes=cfg.dataset.nc,
                      fpn_channels=cfg.model.fpn_channels,
-                     use_attention=cfg.model.use_attention,)
+                     attention_type=cfg.model.attention_type,)
         data_encoder = YOLODataEncoder(input_size=cfg.model.image_size[:2],
                                        classes=cfg.dataset.names,
                                        strides=model.backbone.strides,
