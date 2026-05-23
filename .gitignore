@@ -5,6 +5,7 @@ samples/
 checkpoints/
 wandb/
 experiments/
+evaluation/
 
 *.DS_Store
 *.log

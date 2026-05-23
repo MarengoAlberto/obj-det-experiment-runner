@@ -3,12 +3,17 @@ import time
 import yaml
 import torch
 import numbers
+import pandas as pd
 import numpy as np
 import requests
 import zipfile
-from typing import Union, cast
+from typing import Union, cast, Any, Tuple
 from box import Box
 from collections.abc import Mapping
+from pathlib import Path
+import json
+import re
+from omegaconf import OmegaConf
 
 def load_model(model, model_folder: str, *args, **kwargs):
     model_name = kwargs.get("model_name", "my_yolo")
@@ -213,3 +218,252 @@ def merge_metric_dicts(*dicts: Mapping, prefix_conflicts: bool = False) -> dict[
 def refactor_dict(d: dict, prefix: str) -> dict:
     """Add a prefix to all keys in the dictionary."""
     return {f"{prefix}_{k}": v for k, v in d.items()}
+
+def append_model_results_to_csv(
+    csv_path: str | Path,
+    model_name: str,
+    model_config: dict[str, Any],
+    map_results: dict[str, Any],
+    model_name_col: str = "model_name",
+) -> bool:
+    """
+    Append one model evaluation result to a CSV file.
+
+    Behavior:
+    - Creates the CSV if it does not exist.
+    - Skips writing if model_name already exists.
+    - Adds config keys and metric keys as columns.
+    - Automatically handles new columns by expanding the CSV schema.
+    - Converts numpy scalar values, such as np.float64, into regular Python values.
+
+    Returns:
+        True if a new row was added.
+        False if model_name already existed and the row was skipped.
+    """
+
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def normalize_value(value: Any) -> Any:
+        """
+        Convert values into CSV-friendly formats.
+        """
+        if isinstance(value, np.generic):
+            return value.item()
+
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value)
+
+        return value
+
+    row = {
+        model_name_col: model_name,
+        **{key: normalize_value(value) for key, value in model_config.items()},
+        **{key: normalize_value(value) for key, value in map_results.items()},
+    }
+
+    if csv_path.exists():
+        df = pd.read_csv(csv_path)
+    else:
+        df = pd.DataFrame()
+
+    if not df.empty and model_name_col in df.columns:
+        existing_models = df[model_name_col].astype(str).tolist()
+
+        if model_name in existing_models:
+            return False
+
+    new_row_df = pd.DataFrame([row])
+
+    # This automatically adds any new columns from the new row.
+    df = pd.concat([df, new_row_df], ignore_index=True, sort=False)
+
+    df.to_csv(csv_path, index=False)
+
+    return True
+
+def get_model_name(pth_file: str | Path) -> Tuple[str, str]:
+    pth_file = str(pth_file)
+    if pth_file.endswith("YOLO_train.pth"):
+        model_name = os.path.dirname(pth_file).split("/")[-2].replace("yolo_", "")
+        model_tag = os.path.dirname(pth_file).split("/")[-1]
+        return model_name, model_tag
+    else:
+        model_name = os.path.splitext(os.path.basename(pth_file))[0].replace("yolo_", "")
+        return model_name, "best_map"
+
+def load_yaml_cfg(yaml_path: str | Path):
+    yaml_path = Path(yaml_path).expanduser().resolve()
+
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"YAML file does not exist: {yaml_path}")
+
+    cfg = OmegaConf.load(yaml_path)
+    return cfg
+
+def normalize_name(name: str) -> str:
+    """
+    Normalize names so:
+    'deft_mountain' == 'deft-mountain-46' partially
+    """
+    return re.sub(r"[^a-zA-Z0-9]", "", name).lower()
+
+
+def load_model_yaml(
+    model_name: str,
+    root_dir: str | Path,
+    yaml_patterns: tuple[str, ...] = ("*.yaml", "*.yml"),
+) -> dict[str, Any]:
+    """
+    Find a folder under root_dir whose normalized name contains the normalized model_name,
+    then load the YAML file inside that folder.
+    """
+
+    root_dir = Path(root_dir).expanduser().resolve()
+
+    if not root_dir.exists():
+        raise FileNotFoundError(f"Root directory does not exist: {root_dir}")
+
+    if not root_dir.is_dir():
+        raise NotADirectoryError(f"Root path is not a directory: {root_dir}")
+
+    normalized_model_name = normalize_name(model_name)
+
+    matching_folders = sorted(
+        folder
+        for folder in root_dir.rglob("*")
+        if folder.is_dir()
+        and normalized_model_name in normalize_name(folder.name)
+    )
+
+    if not matching_folders:
+        available_folders = [p.name for p in root_dir.iterdir() if p.is_dir()]
+        raise FileNotFoundError(
+            f"No folder found where folder name contains '{model_name}' under: {root_dir}\n"
+            f"Available folders: {available_folders}"
+        )
+
+    matched_folder = matching_folders[0]
+
+    yaml_files = []
+    for pattern in yaml_patterns:
+        yaml_files.extend(matched_folder.glob(pattern))
+
+    yaml_files = sorted(set(yaml_files))
+
+    if not yaml_files:
+        raise FileNotFoundError(
+            f"No YAML file found inside matched folder: {matched_folder}"
+        )
+
+    if len(yaml_files) > 1:
+        raise ValueError(
+            f"Multiple YAML files found inside {matched_folder}: "
+            f"{[str(path) for path in yaml_files]}"
+        )
+
+    yaml_path = yaml_files[0]
+
+    return load_yaml_cfg(yaml_path)
+
+def model_exists_in_csv(
+    csv_path: str | Path,
+    model_name: str,
+    model_name_col: str = "model_name",
+) -> bool:
+    """
+    Check whether model_name already exists in a CSV file.
+
+    Returns:
+        True if the model exists.
+        False if the CSV does not exist, the column does not exist, or the model is not found.
+    """
+
+    csv_path = Path(csv_path)
+
+    if not csv_path.exists():
+        return False
+
+    df = pd.read_csv(csv_path)
+
+    if model_name_col not in df.columns:
+        return False
+
+    return model_name in df[model_name_col].astype(str).values
+
+def find_model_pth_paths(
+    root_model_folder: str | Path,
+    model_name: str,
+    tags: str | list[str] | tuple[str, ...] | None = None,
+) -> list[Path]:
+    """
+    Find .pth files for a model.
+
+    Logic:
+    1. Look for a model subfolder whose name contains model_name.
+       Example:
+           model_name='deft-mountain'
+           folder='deft_mountain'
+
+    2. If model folder exists:
+       - If tags are provided, only search inside subfolders whose names
+         exactly match one of the tags after normalization.
+       - If no tags are provided, return all .pth files inside the model folder.
+
+    3. If no model subfolder exists:
+       - Search for .pth files in the root folder whose filename contains model_name.
+       - The tag is ignored in this fallback case because there are no tag subfolders.
+    """
+
+    root_model_folder = Path(root_model_folder).expanduser().resolve()
+
+    if not root_model_folder.exists():
+        raise FileNotFoundError(f"Root model folder does not exist: {root_model_folder}")
+
+    if not root_model_folder.is_dir():
+        raise NotADirectoryError(f"Root path is not a directory: {root_model_folder}")
+
+    normalized_model_name = normalize_name(model_name)
+
+    if tags is None:
+        normalized_tags = None
+    elif isinstance(tags, str):
+        normalized_tags = {normalize_name(tags)}
+    else:
+        normalized_tags = {normalize_name(tag) for tag in tags}
+
+    model_folders = sorted(
+        folder
+        for folder in root_model_folder.iterdir()
+        if folder.is_dir()
+        and normalized_model_name in normalize_name(folder.name)
+    )
+
+    if model_folders:
+        matches: list[Path] = []
+
+        for model_folder in model_folders:
+            if normalized_tags is None:
+                matches.extend(sorted(model_folder.rglob("*.pth")))
+            else:
+                tag_folders = sorted(
+                    folder
+                    for folder in model_folder.iterdir()
+                    if folder.is_dir()
+                    and normalize_name(folder.name) in normalized_tags
+                )
+
+                for tag_folder in tag_folders:
+                    matches.extend(sorted(tag_folder.rglob("*.pth")))
+
+        return sorted(set(matches))
+
+    root_pth_files = sorted(root_model_folder.glob("*.pth"))
+
+    root_matches = [
+        pth_file
+        for pth_file in root_pth_files
+        if normalized_model_name in normalize_name(pth_file.stem)
+    ]
+
+    return root_matches

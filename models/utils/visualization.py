@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 import cv2
 
 def draw_bbox(image, boxes, labels=None, conf_scores = None, color=(255, 0, 0), thickness=-1):
@@ -49,3 +50,29 @@ def draw_bbox(image, boxes, labels=None, conf_scores = None, color=(255, 0, 0), 
             )
 
     return image
+
+def plot_predictions(prediction):
+    # Define subplots
+    fig, ax = plt.subplots(
+        nrows=1,
+        ncols=1,
+        figsize=(10, 10),
+    )
+    # Plot Predictions.
+    orig_image = draw_bbox(
+        prediction['image_array'],
+        np.array(prediction['final_boxes'], dtype=np.int32),
+        labels=prediction['class_names'],
+        color=(255, 0, 0),
+        thickness=2,
+    )
+
+
+    ax.imshow(orig_image)
+    ax.axis("off")
+
+    plt.figtext(0.50, 0.9, "Predictions", fontsize=20, color="r", ha="center")
+
+    plt.show(block=False)
+
+    return fig

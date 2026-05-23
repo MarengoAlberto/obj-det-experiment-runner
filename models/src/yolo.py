@@ -42,6 +42,8 @@ class YOLOHeads(nn.Module):
         return preds
 
 class YOLO(nn.Module):
+    use_attention = False
+
     def __init__(self,
                  backbone_name: str = "resnet18",
                  train_backbone: bool = True,
@@ -59,7 +61,7 @@ class YOLO(nn.Module):
                 attention_module = CBAM
             elif attention_type == "ResidualCBAM":
                 attention_module = ResidualCBAM
-            self.use_attention = kwargs.get("use_attention", False)
+            self.use_attention = True
 
         self.backbone = DetBackbone(
             name=backbone_name,
