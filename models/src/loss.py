@@ -24,7 +24,7 @@ class Loss:
                                              obj_neg_weight=cfg.loss.obj_neg_weight,
                                              s1_beta=cfg.loss.s1_beta,
                                              s1_reduction=cfg.loss.s1_reduction,
-                                             hybrid_ciou_weight=cfg.loss.hybrid_ciou_weight,
+                                             hybrid_xiou_weight=cfg.loss.hybrid_xiou_weight,
                                              sw_base=cfg.loss.stride_weight.base,
                                              sw_min=cfg.loss.stride_weight.min,
                                              sw_max=cfg.loss.stride_weight.max,
@@ -413,7 +413,7 @@ class YOLODetectionLoss(nn.Module):
                  obj_neg_weight=1.0,
                  s1_beta=1.0,
                  s1_reduction="mean",
-                 hybrid_ciou_weight=0.5,
+                 hybrid_xiou_weight=0.5,
                  sw_base=12.0,
                  sw_min=0.75,
                  sw_max=2.5,):
@@ -431,7 +431,7 @@ class YOLODetectionLoss(nn.Module):
         self.obj_neg_weight = float(obj_neg_weight)
         self.s1_beta = float(s1_beta)
         self.s1_reduction = s1_reduction
-        self.hybrid_ciou_weight = float(hybrid_ciou_weight)
+        self.hybrid_xiou_weight = float(hybrid_xiou_weight)
         self.sw_base = sw_base
         self.sw_min = sw_min
         self.sw_max = sw_max
@@ -690,7 +690,7 @@ class YOLODetectionLoss(nn.Module):
                 loss_bbox = self._compute_smooth_l1_bbox_loss(p, t, pos_mask, batch_size)
             elif self.box_loss == "l1":
                 loss_bbox = F.l1_loss(p, t)
-            elif self.box_loss in ("giou", "diou", "ciou", "hybrid_s1_ciou"):
+            elif self.box_loss in ("giou", "diou", "ciou", "hybrid_s1_ciou", "hybrid_s1_diou"):
                 # ← Decode deltas → absolute (cx,cy,w,h) before IoU geometry
                 p_dec = self._decode_deltas_to_cxcywh(p, pos_mask, batch_size)
                 t_dec = self._decode_deltas_to_cxcywh(t, pos_mask, batch_size)
@@ -703,7 +703,11 @@ class YOLODetectionLoss(nn.Module):
                 elif self.box_loss == "hybrid_s1_ciou":
                     ciou_loss = self._ciou_loss(p_dec, t_dec)
                     smooth_l1_loss = self._compute_smooth_l1_bbox_loss(p, t, pos_mask, batch_size)
-                    loss_bbox = smooth_l1_loss + self.hybrid_ciou_weight * ciou_loss
+                    loss_bbox = smooth_l1_loss + self.hybrid_xiou_weight * ciou_loss
+                elif self.box_loss == "hybrid_s1_diou":
+                    diou_loss = self._diou_loss(p_dec, t_dec)
+                    smooth_l1_loss = self._compute_smooth_l1_bbox_loss(p, t, pos_mask, batch_size)
+                    loss_bbox = smooth_l1_loss + self.hybrid_xiou_weight * diou_loss
             else:
                 raise ValueError(f"Unsupported box_loss: {self.box_loss}")
 

@@ -1,9 +1,10 @@
 name: yolo
-image_size: [512, 512, 3]
+image_size: [640, 640, 3]
 backbone_name: resnet50
 fpn_channels: 384
 returned_layers: [1, 2, 3, 4]
 train_backbone: true
+attention_type: ResidualCBAM   # CBAM | ResidualCBAM | None
 
 top_k_per_level: 2
 center_radius: 1.0
@@ -14,4 +15,4 @@ score_threshold: 0.01
 max_detections: 100
 
 metadata:
-  best_model_folder: trained_model/deft_mountain/last
+  best_model_folder: trained_model/fresh_bird/best_map
