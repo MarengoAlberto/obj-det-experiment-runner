@@ -10,9 +10,9 @@ apply_negative_mining: true
 obj_neg_weight: 1.5
 s1_beta: 0.5
 s1_reduction: custom_stride_weighted # "mean" | "sum" | "custom_stride_weighted"
-hybrid_xiou_weight: 0.5
+hybrid_xiou_weight: 0.75
 
 stride_weight:
-  base: 16.0
-  min: 0.75
-  max: 3.0
+  base: 18.0
+  min: 1.0
+  max: 3.25
