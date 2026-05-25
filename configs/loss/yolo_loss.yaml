@@ -13,6 +13,6 @@ s1_reduction: custom_stride_weighted # "mean" | "sum" | "custom_stride_weighted"
 hybrid_xiou_weight: 0.75
 
 stride_weight:
-  base: 18.0
-  min: 1.0
-  max: 3.25
+  base: 16.0
+  min: 0.75
+  max: 3.0

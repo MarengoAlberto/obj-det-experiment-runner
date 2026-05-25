@@ -171,56 +171,59 @@ class YOLODataEncoder:
 
         def allowed_strides_for_box(w, h, size):
             """
-            Tune these thresholds for 512x512 license-plate detection.
+            Size-aware stride assignment for license plates.
 
-            General idea:
-              tiny/far plates   -> stride 4
-              small plates      -> stride 4 or 8
-              normal plates     -> stride 8 or 16
-              large close plates -> stride 16 or 32
+            Goal:
+              tiny/far plates    -> P2/P3 only: stride 4, 8
+              small plates       -> stride 4, 8, 16
+              medium plates      -> stride 8, 16, 32
+              large close plates -> stride 16, 32
+
+            This avoids assigning tiny plates to stride 16/32, which can hurt AP_small.
             """
 
             h = float(h)
             w = float(w)
-            size = float(size)
+            area = w * h
 
-            # Main level by plate height / geometric size.
-            # For license plates, height is often more informative than area.
-            if h < 12:
-                main = 4
-            elif h < 24:
-                main = 8
-            elif h < 48:
-                main = 16
-            else:
-                main = 32
+            def keep_existing(strides):
+                # Keep only strides that exist in this model.
+                existing = [s for s in strides if s in unique_strides]
 
-            # Only keep levels that actually exist in this model.
-            if main not in unique_strides:
-                main = min(unique_strides, key=lambda s: abs(s - main))
+                # Fallback if model does not have the requested stride.
+                if len(existing) == 0:
+                    target = strides[0]
+                    existing = [min(unique_strides, key=lambda s: abs(s - target))]
 
+                return sorted(set(existing))
+
+            # If you disable multi-level assignment, choose one main stride.
             if not self.allow_multi_level:
+                if h < 18 or area < 1024:
+                    main = 4
+                elif h < 32:
+                    main = 8
+                elif h < 64:
+                    main = 16
+                else:
+                    main = 32
+
+                if main not in unique_strides:
+                    main = min(unique_strides, key=lambda s: abs(s - main))
+
                 return [main]
 
-            # Add one adjacent level for smoother training.
-            # This avoids hard boundaries like h=23.9 vs h=24.1.
-            idx = unique_strides.index(main)
-            allowed = [main]
+            # Multi-level assignment.
+            if h < 18 or area < 1024:
+                return keep_existing([4, 8])
 
-            if idx > 0:
-                allowed.append(unique_strides[idx - 1])
-            if idx + 1 < len(unique_strides):
-                allowed.append(unique_strides[idx + 1])
+            if h < 32:
+                return keep_existing([4, 8, 16])
 
-            # Optional: do not let very tiny plates go too coarse.
-            if h < 12:
-                allowed = [s for s in allowed if s <= 8]
+            if h < 64:
+                return keep_existing([8, 16, 32])
 
-            # Optional: do not let very large plates go too fine.
-            if h >= 48:
-                allowed = [s for s in allowed if s >= 8]
-
-            return sorted(set(allowed))
+            return keep_existing([16, 32])
 
         for box_i in range(boxes.shape[0]):
             gt_ctr = box_centers[box_i]
@@ -282,45 +285,6 @@ class YOLODataEncoder:
             n_pos = (assigned_box_ids[m] >= 0).sum().item()
             n_all = m.sum().item()
             print(f"stride={stride:>2}: positives={n_pos:>5} / cells={n_all:>6}")
-
-    # def _assign_boxes_to_cells(self, boxes, classes, background_id=0):
-    #     cell_centers = self.grid_centers[:, :2]
-    #     strides = self.grid_centers[:, 4].squeeze()  # shape [N]
-    #
-    #     classes = torch.as_tensor(classes, dtype=torch.long, device=boxes.device)
-    #
-    #     box_centers = torch.stack([
-    #         (boxes[:, 0] + boxes[:, 2]) / 2,
-    #         (boxes[:, 1] + boxes[:, 3]) / 2,
-    #     ], dim=1)
-    #
-    #     assigned_box_ids = torch.full(
-    #         (cell_centers.shape[0],), -1, dtype=torch.long, device=boxes.device
-    #     )
-    #     assigned_classes = torch.full(
-    #         (cell_centers.shape[0],), background_id, dtype=torch.long, device=boxes.device
-    #     )
-    #
-    #     dist = torch.cdist(cell_centers.to(boxes.device), box_centers)
-    #
-    #     top_k = 5
-    #     best_cells_per_box = dist.topk(k=top_k, dim=0, largest=False).indices
-    #
-    #     for box_i in range(boxes.shape[0]):
-    #         cells = best_cells_per_box[:, box_i]
-    #
-    #         cell_strides = strides[cells].to(boxes.device)
-    #         cell_dist = dist[cells, box_i]
-    #         valid = cell_dist < (1.5 * cell_strides)
-    #         cells = cells[valid]
-    #
-    #         if len(cells) == 0:
-    #             cells = best_cells_per_box[:1, box_i]
-    #
-    #         assigned_box_ids[cells] = box_i
-    #         assigned_classes[cells] = classes[box_i]
-    #
-    #     return assigned_box_ids, assigned_classes
 
     def _assign_tensor_with_zeros(self, tensor, idx, out_shape=4):
         # bboxes_norm: [n_boxes, 4]
