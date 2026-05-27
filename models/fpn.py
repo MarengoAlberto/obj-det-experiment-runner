@@ -37,7 +37,7 @@ class FPNModel(BaseModel):
         self.classes = cfg.dataset.names
         self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
 
-        self.cfg = cfg
+        self.cfg = utils.handle_yaml(cfg)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.logger.info(f"Using device: {self.device}")
 
@@ -77,7 +77,7 @@ class FPNModel(BaseModel):
     def train(self, data, n_epochs=None, batch_size=None, data_dir='dataset', coco_eval=True):
 
         # Check if data is already downloaded and preprocessed, if not, do it.
-        needs_download, url, data_yaml = utils.check_data_exists(data, data_dir)
+        needs_download, url, data_yaml = utils.check_data_exists(data)
         self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
             self.logger.info(f"Downloading data from {url}")

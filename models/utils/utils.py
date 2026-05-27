@@ -1,6 +1,5 @@
 import os
 import time
-import yaml
 import torch
 import numbers
 import pandas as pd
@@ -141,15 +140,15 @@ def download_and_unzip_zip(url: str, extract_dir: str = 'dataset', zip_name: Uni
         except FileNotFoundError:
             pass
 
-def check_data_exists(data_path: str, data_dir: str = 'dataset'):
+def check_data_exists(yaml_path: str):
 
-    with open(data_path, 'r') as file:
-        data = yaml.safe_load(file)
+    data_cfg = OmegaConf.load(yaml_path)
+    data_dir = data_cfg.path if "path" in data_cfg else 'dataset'
 
     needs_download = True
-    url = data['metadata']['url']
-    train_folder = os.path.join(data_dir, data['train'].replace('../', ''))
-    val_folder = os.path.join(data_dir, data['val'].replace('../', ''))
+    url = data_cfg.metadata.url
+    train_folder = os.path.join(data_dir, data_cfg.train.replace('../', ''))
+    val_folder = os.path.join(data_dir, data_cfg.val.replace('../', ''))
     if (
         os.path.isdir(train_folder)
         and os.path.isdir(val_folder)
@@ -157,9 +156,9 @@ def check_data_exists(data_path: str, data_dir: str = 'dataset'):
         and bool(os.listdir(val_folder))
     ):
         needs_download = False
-    data['full_train_path'] = train_folder
-    data['full_val_path'] = val_folder
-    return needs_download, url, Box(data)
+    data_cfg.full_train_path = train_folder
+    data_cfg.full_val_path = val_folder
+    return needs_download, url, data_cfg
 
 def get_val_yaml_file_path(data_path):
     if not os.path.exists(data_path):
@@ -467,3 +466,21 @@ def find_model_pth_paths(
     ]
 
     return root_matches
+
+from omegaconf import DictConfig, OmegaConf
+
+
+def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
+    model_name = OmegaConf.select(cfg_yaml, "model.name")
+
+    if model_name == "yolo":
+        names = OmegaConf.select(cfg_yaml, "dataset.names")
+
+        if names is not None:
+            cfg_yaml.dataset.names = [
+                cls for cls in names
+                if cls != "__background__"
+            ]
+            cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+    print(cfg_yaml)
+    return cfg_yaml

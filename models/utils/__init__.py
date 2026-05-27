@@ -13,6 +13,7 @@ from .utils import (download_and_unzip_zip,
                     model_exists_in_csv,
                     get_model_name,
                     append_model_results_to_csv,
-                    find_model_pth_paths)
+                    find_model_pth_paths,
+                    handle_yaml)
 from .coco_evaluate import coco_eval
 from .visualization import plot_predictions, draw_bbox
