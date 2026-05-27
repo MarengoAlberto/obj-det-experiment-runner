@@ -7,12 +7,10 @@ import numpy as np
 import requests
 import zipfile
 from typing import Union, cast, Any, Tuple
-from box import Box
 from collections.abc import Mapping
 from pathlib import Path
 import json
 import re
-from omegaconf import OmegaConf
 
 def load_model(model, model_folder: str, *args, **kwargs):
     model_name = kwargs.get("model_name", "my_yolo")
@@ -140,15 +138,17 @@ def download_and_unzip_zip(url: str, extract_dir: str = 'dataset', zip_name: Uni
         except FileNotFoundError:
             pass
 
-def check_data_exists(yaml_path: str):
+def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
 
     data_cfg = OmegaConf.load(yaml_path)
-    data_dir = data_cfg.path if "path" in data_cfg else 'dataset'
+    data_dir = data_cfg.path if "path" in data_cfg else default_data_dir
 
     needs_download = True
-    url = data_cfg.metadata.url
+    url = data_cfg.metadata.url if "url" in data_cfg else None
     train_folder = os.path.join(data_dir, data_cfg.train.replace('../', ''))
     val_folder = os.path.join(data_dir, data_cfg.val.replace('../', ''))
+    if 'test' in data_cfg:
+        test_folder = os.path.join(data_dir, data_cfg.test.replace('../', ''))
     if (
         os.path.isdir(train_folder)
         and os.path.isdir(val_folder)
@@ -158,12 +158,9 @@ def check_data_exists(yaml_path: str):
         needs_download = False
     data_cfg.full_train_path = train_folder
     data_cfg.full_val_path = val_folder
+    if 'test' in data_cfg:
+        data_cfg.full_test_path = test_folder
     return needs_download, url, data_cfg
-
-def get_val_yaml_file_path(data_path):
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Data not found at: {data_path}")
-    return Box({"full_val_path": data_path})
 
 def to_python_number(value):
     """Convert common tensor/NumPy scalar types to plain Python numbers."""
@@ -471,8 +468,9 @@ from omegaconf import DictConfig, OmegaConf
 
 
 def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
+    if 'nc' not in cfg_yaml.dataset:
+        cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
     model_name = OmegaConf.select(cfg_yaml, "model.name")
-
     if model_name == "yolo":
         names = OmegaConf.select(cfg_yaml, "dataset.names")
 
@@ -484,3 +482,90 @@ def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
             cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
     print(cfg_yaml)
     return cfg_yaml
+
+def run_python_script_string(
+    script: str,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Run Python code stored as a string.
+
+    Args:
+        script: Python code as a string.
+        context: Variables to make available inside the script.
+
+    Returns:
+        The globals dictionary after execution.
+    """
+
+    exec_globals = {
+        "__name__": "__main__",
+    }
+
+    if context:
+        exec_globals.update(context)
+
+    exec(script, exec_globals)
+
+    return exec_globals
+
+import torch
+
+
+def boxes_to_xyxy(boxes, box_format: str):
+    """
+    Convert boxes to xyxy format.
+
+    Args:
+        boxes:
+            Tensor-like of shape [N, 4].
+        box_format:
+            One of:
+              - "xyxy":   [x_min, y_min, x_max, y_max]
+              - "xywh":   [x_min, y_min, width, height]
+              - "cxcywh": [center_x, center_y, width, height]
+
+    Returns:
+        Tensor of shape [N, 4] in xyxy format.
+    """
+    boxes = torch.as_tensor(boxes)
+
+    if boxes.numel() == 0:
+        return boxes.reshape(-1, 4)
+
+    if boxes.ndim == 1:
+        boxes = boxes.unsqueeze(0)
+
+    if boxes.shape[-1] != 4:
+        raise ValueError(f"Expected boxes shape [N, 4], got {tuple(boxes.shape)}")
+
+    if box_format == "xyxy":
+        return boxes.clone()
+
+    if box_format == "xywh":
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        w = boxes[:, 2]
+        h = boxes[:, 3]
+
+        x2 = x1 + w
+        y2 = y1 + h
+
+        return torch.stack([x1, y1, x2, y2], dim=1)
+
+    if box_format == "cxcywh":
+        cx = boxes[:, 0]
+        cy = boxes[:, 1]
+        w = boxes[:, 2]
+        h = boxes[:, 3]
+
+        x1 = cx - 0.5 * w
+        y1 = cy - 0.5 * h
+        x2 = cx + 0.5 * w
+        y2 = cy + 0.5 * h
+
+        return torch.stack([x1, y1, x2, y2], dim=1)
+
+    raise ValueError(
+        f"Unknown box_format={box_format}. Expected one of: 'xyxy', 'xywh', 'cxcywh'."
+    )

@@ -62,11 +62,12 @@ class YOLO(FPNModel):
             "total_loss": total_loss if criterion and y_true is not None else None
         }
 
-    def evaluate(self, data_folder, batch_size=64):
+    def evaluate(self, split_name, batch_size=64):
+        if self.data_yaml is None:
+            raise ValueError("Data yaml is not loaded. Please load data first.")
 
-        data = utils.get_val_yaml_file_path(data_folder)
-        data_class = utils.DataSetup(self.cfg, data, self.data_encoder)
-        loader = data_class.get_one_loader(batch_size)
+        data_class = utils.DataSetup(self.cfg, self.data_yaml, self.data_encoder)
+        loader = data_class.get_one_loader(batch_size, split_name=split_name)
 
         iterator = tqdm(loader, dynamic_ncols=True)
 
@@ -94,7 +95,7 @@ class YOLO(FPNModel):
                 labels_raw_per_image = label_raw.to(self.device)
 
                 target_dict = dict(
-                    boxes=boxes_raw_per_image,
+                    boxes=utils.boxes_to_xyxy(boxes_raw_per_image, self.cfg.dataset.metadata.box_format),
                     labels=labels_raw_per_image,
                     img_size = original_size
                 )

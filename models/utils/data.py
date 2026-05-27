@@ -72,16 +72,28 @@ class DataSetup:
 
         return train_loader, valid_loader, train_sampler, val_sampler
 
-    def get_one_loader(self, _batch_size):
+    def get_one_loader(self, _batch_size, split_name='val'):
 
         batch_size = _batch_size if _batch_size else self.cfg.experiment.train.batch_size
-        path = self.data.full_val_path
+
+        if split_name == 'train':
+            path = self.data.full_train_path
+        elif split_name == 'val':
+            path = self.data.full_val_path
+        elif split_name == 'test':
+            path = self.data.full_test_path
+        else:
+            raise ValueError(f"Unknown split_name: {split_name}")
+
         num_workers = self.cfg.experiment.train.num_workers
 
-        _, valid_augmentations = get_augmentations(height=self.height, width=self.width)
+        train_augmentation, valid_augmentations = get_augmentations(height=self.height, width=self.width)
 
         # Create custom dataset.
-        dataset = self.get_dataset(path, valid_augmentations, train=False)
+        if split_name == 'train':
+            dataset = self.get_dataset(path, train_augmentation, train=True)
+        else:
+            dataset = self.get_dataset(path, valid_augmentations, train=False)
 
         loader = DataLoader(
             dataset,
@@ -95,6 +107,11 @@ class DataSetup:
         return loader
 
     def get_dataset(self, path, trasform_function, train=True):
+
+        if 'is_standard_folder_structure' in self.cfg.dataset.metadata:
+            is_standard_folder_structure = self.cfg.dataset.metadata.is_standard_folder_structure
+        else:
+            is_standard_folder_structure = True
         if self.cfg.model.name == "fpn":
             dataset = FPNDataset(
                 data_path=path,
@@ -104,6 +121,7 @@ class DataSetup:
                 input_size=self.image_size,
                 is_train=train,
                 debug=self.cfg.experiment.train.debug,
+                is_standard_folder_structure=is_standard_folder_structure,
             )
         elif self.cfg.model.name == "yolo":
             dataset = YoloDataset(
@@ -114,6 +132,7 @@ class DataSetup:
                 input_size=self.image_size,
                 is_train=train,
                 debug=self.cfg.experiment.train.debug,
+                is_standard_folder_structure=is_standard_folder_structure,
             )
         else:
              raise ValueError(f"Unknown model_type: {self.cfg.model.name}")
@@ -128,7 +147,8 @@ class FPNDataset(Dataset):
         transform=None,
         is_train=True,
         input_size=(300, 300, 3),
-        debug=False
+        debug=False,
+        is_standard_folder_structure=True,
     ):
         self.data_path = os.path.expanduser(data_path)
         self.classes = classes
@@ -137,8 +157,11 @@ class FPNDataset(Dataset):
         self.is_train = is_train
         self.encoder = data_encoder
 
-        self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path, train=is_train, shuffle=is_train, debug=debug)
-
+        self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path,
+                                                                                        train=is_train,
+                                                                                        shuffle=is_train,
+                                                                                        debug=debug,
+                                                                                        is_standard_folder_structure=is_standard_folder_structure)
     def __len__(self):
         # Get size of the Dataset.
         return self.num_samples
@@ -200,7 +223,8 @@ def list_files_in_directory(directory_path):
         print(f"Error: Directory '{directory_path}' not found.")
         return []
 
-def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
+
+def load_groundtruths(data_path, train=True, shuffle=True, debug=False, is_standard_folder_structure=True):
     image_paths = []
     boxes = []
     labels = []
@@ -209,7 +233,10 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
     num_samples = len(file_names)
     for image_name in file_names:
         image_id, _ = os.path.splitext(os.path.basename(image_name))
-        filepath = os.path.join(data_path, 'Label', image_id+'.txt')
+        if is_standard_folder_structure:
+            filepath = os.path.join(data_path.replace('images', 'labels'), image_id + '.txt')
+        else:
+            filepath = os.path.join(data_path, 'Label', image_id + '.txt')
 
         with open(filepath) as f:
             lines = f.readlines()
@@ -219,13 +246,17 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
         label = []
 
         for line in lines:
-            splited = line.strip().split()[-4:]
-            xmin = splited[0]
-            ymin = splited[1]
-            xmax = splited[2]
-            ymax = splited[3]
+            splited = line.strip().split()
+            bbox = splited[-4:]
+            xmin = bbox[0]
+            ymin = bbox[1]
+            xmax = bbox[2]
+            ymax = bbox[3]
 
-            class_label = int(1)
+            if is_standard_folder_structure:
+                class_label = int(splited[0])
+            else:
+                class_label = int(1)
             box.append([float(xmin), float(ymin), float(xmax), float(ymax)])
             label.append(class_label)
         boxes.append(box)

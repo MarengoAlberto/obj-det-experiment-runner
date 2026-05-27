@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 from torchinfo import summary
+from omegaconf import OmegaConf
 
 from .base_model import BaseModel
 from .trainers import get_trainer
@@ -11,6 +12,7 @@ from . import utils, src
 class FPNModel(BaseModel):
 
     start_epoch = 0
+    data_yaml = None
 
     def __init__(self, cfg, load_model=True, *args, **kwargs):
 
@@ -80,16 +82,26 @@ class FPNModel(BaseModel):
         needs_download, url, data_yaml = utils.check_data_exists(data)
         self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
-            self.logger.info(f"Downloading data from {url}")
-            utils.download_and_unzip_zip(url, data_dir)
+            if 'download' in data_yaml and url is None:
+                utils.run_python_file(
+                    script=data_yaml.download,
+                    context={
+                        "yaml": OmegaConf.to_container(data_yaml, resolve=True),
+                    },
+                )
+            else:
+                self.logger.info(f"Downloading data from {url}")
+                utils.download_and_unzip_zip(url, data_dir)
 
         # Initialize Trainer
         trainer = self.trainer_cls(self, data_yaml, self.cfg, logger=self.logger, close_when_done=(not coco_eval))
         # Start Training
         history = trainer.train(n_epochs=n_epochs, batch_size=batch_size, start_epoch=self.start_epoch)
+        self.data_yaml = data_yaml
         coco_eval_results = None
         if coco_eval:
-            coco_eval_results = self.evaluate(self.cfg.dataset.val.replace('..', data_dir))
+            split_name = 'test' if 'test' in data_yaml else 'val'
+            coco_eval_results = self.evaluate(split_name)
             if trainer.wandb:
                 trainer.wandb.log({'coco_eval_results': coco_eval_results})
                 trainer.wandb.finish()
@@ -150,11 +162,12 @@ class FPNModel(BaseModel):
             "total_loss": total_loss.item() if criterion and y_true else None
         }
 
-    def evaluate(self, data_folder, batch_size=64):
+    def evaluate(self, split_name, batch_size=64):
+        if self.data_yaml is None:
+            raise ValueError("Data yaml is not loaded. Please load data first.")
 
-        data = utils.get_val_yaml_file_path(data_folder)
-        data_class = utils.DataSetup(self.cfg, data, self.data_encoder)
-        loader = data_class.get_one_loader(batch_size)
+        data_class = utils.DataSetup(self.cfg, self.data_yaml, self.data_encoder)
+        loader = data_class.get_one_loader(batch_size, split_name=split_name)
 
         iterator = tqdm(loader, dynamic_ncols=True)
 
@@ -184,7 +197,7 @@ class FPNModel(BaseModel):
                 labels_raw_per_image = label_raw.to(self.device)
 
                 target_dict = dict(
-                    boxes=boxes_raw_per_image,
+                    boxes=utils.boxes_to_xyxy(boxes_raw_per_image, self.cfg.dataset.metadata.box_format),
                     labels=labels_raw_per_image,
                     img_size = original_size
                 )

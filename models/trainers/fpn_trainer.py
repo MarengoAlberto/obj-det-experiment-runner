@@ -11,7 +11,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .base_trainer import BaseTrainer
 from ..src import Loss
-from ..utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger
+from ..utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger, boxes_to_xyxy
 
 class FPNTrainer(BaseTrainer):
 
@@ -338,7 +338,7 @@ class FPNTrainer(BaseTrainer):
                 labels_raw_per_image = label_raw.to(self.device)
 
                 target_dict = dict(
-                    boxes=boxes_raw_per_image,
+                    boxes=boxes_to_xyxy(boxes_raw_per_image, self.cfg.dataset.metadata.box_format),
                     labels=labels_raw_per_image
                 )
 
