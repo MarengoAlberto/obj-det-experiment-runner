@@ -30,7 +30,8 @@ class DataSetup:
         val_path = self.data.full_val_path
         num_workers = self.cfg.experiment.train.num_workers
 
-        train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width)
+        train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width,
+                                                                     box_format=self.cfg.dataset.metadata.box_format)
 
         # Create custom datasets.
         train_dataset = self.get_dataset(train_path, train_augmentations, train=True)
@@ -87,7 +88,8 @@ class DataSetup:
 
         num_workers = self.cfg.experiment.train.num_workers
 
-        train_augmentation, valid_augmentations = get_augmentations(height=self.height, width=self.width)
+        train_augmentation, valid_augmentations = get_augmentations(height=self.height, width=self.width,
+                                                                     box_format=self.cfg.dataset.metadata.box_format)
 
         # Create custom dataset.
         if split_name == 'train':
@@ -288,25 +290,54 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False, is_stand
 
     return image_paths, boxes, labels, num_samples
 
-def filter_valid_boxes(boxes, labels=None, min_size=1e-6):
-    valid_boxes = []
-    valid_labels = [] if labels is not None else None
+def filter_valid_boxes(boxes, labels=None, box_format="xyxy", min_size=1e-6):
+    """
+    Filter invalid boxes while respecting box format.
 
-    for i, box in enumerate(boxes):
-        x_min, y_min, x_max, y_max = box[:4]
+    box_format:
+      - "xyxy":   [x_min, y_min, x_max, y_max]
+      - "xywh":   [x_min, y_min, width, height]
+      - "cxcywh": [center_x, center_y, width, height]
+    """
+    boxes_t = torch.as_tensor(boxes)
 
-        width = x_max - x_min
-        height = y_max - y_min
+    if boxes_t.numel() == 0:
+        empty_boxes = []
+        empty_labels = [] if labels is not None else None
+        return (empty_boxes, empty_labels) if labels is not None else empty_boxes
 
-        if width > min_size and height > min_size:
-            valid_boxes.append(box)
-            if labels is not None:
-                valid_labels.append(labels[i])
+    if boxes_t.ndim == 1:
+        boxes_t = boxes_t.unsqueeze(0)
+
+    if boxes_t.shape[1] < 4:
+        raise ValueError(f"Expected boxes with at least 4 values, got shape {boxes_t.shape}")
+
+    if box_format == "xyxy":
+        widths = boxes_t[:, 2] - boxes_t[:, 0]
+        heights = boxes_t[:, 3] - boxes_t[:, 1]
+
+    elif box_format in ("xywh", "cxcywh"):
+        widths = boxes_t[:, 2]
+        heights = boxes_t[:, 3]
+
+    else:
+        raise ValueError(
+            f"Unknown box_format={box_format}. Expected 'xyxy', 'xywh', or 'cxcywh'."
+        )
+
+    valid = (widths > min_size) & (heights > min_size)
+
+    filtered_boxes = boxes_t[valid].tolist()
 
     if labels is not None:
-        return valid_boxes, valid_labels
+        labels_t = torch.as_tensor(labels)
+        if labels_t.ndim == 0:
+            labels_t = labels_t.unsqueeze(0)
 
-    return valid_boxes
+        filtered_labels = labels_t[valid].tolist()
+        return filtered_boxes, filtered_labels
+
+    return filtered_boxes
 
 class YoloDataset(FPNDataset):
 
@@ -318,14 +349,13 @@ class YoloDataset(FPNDataset):
         image_path = self.image_paths[idx]
         indexed_boxes = self.boxes[idx]
         indexed_labels = self.labels[idx]
-
         img = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
 
         height = img.shape[0]
         width = img.shape[1]
 
         if self.transforms:
-            indexed_boxes, indexed_labels = filter_valid_boxes(indexed_boxes, indexed_labels)
+            indexed_boxes, indexed_labels = filter_valid_boxes(indexed_boxes, indexed_labels, self.encoder.box_format)
             transformed = self.transforms(image=img, bboxes=indexed_boxes, category_ids=indexed_labels)
 
         else:  # Mandatory transforms to be applied.

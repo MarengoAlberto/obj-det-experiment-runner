@@ -94,19 +94,129 @@ class YOLO(FPNModel):
                 boxes_raw_per_image = box_raw.to(self.device)
                 labels_raw_per_image = label_raw.to(self.device)
 
+                img_size = (self.height, self.width)
+                boxes_xyxy = utils.boxes_to_xyxy(boxes_raw_per_image,
+                                              box_format=self.cfg.dataset.metadata.box_format,
+                                              image_size=img_size,
+                                              normalized=self.cfg.dataset.metadata.box_normalized,
+                                              clip=True)
+
                 target_dict = dict(
-                    boxes=utils.boxes_to_xyxy(boxes_raw_per_image, self.cfg.dataset.metadata.box_format),
+                    boxes=boxes_xyxy,
                     labels=labels_raw_per_image,
-                    img_size = original_size
+                    img_size=img_size
                 )
+
+                if self.cfg.experiment.train.debug:
+                    if i == 0 and idx < 5:
+                        num_classes = len(self.cfg.dataset.names)
+
+                        boxes_cpu = boxes_xyxy.detach().cpu()
+                        labels_cpu = labels_raw_per_image.detach().cpu().long()
+
+                        H, W = img_size  # your img_size is currently (height, width)
+
+                        print("\n" + "=" * 80)
+                        print(f"DEBUG TARGET image={idx}")
+                        print("=" * 80)
+
+                        print(f"box_format(raw): {self.cfg.dataset.metadata.box_format}")
+                        print(f"model image size: H={H}, W={W}")
+                        print(f"num boxes: {boxes_cpu.shape[0]}")
+                        print(f"num classes: {num_classes}")
+
+                        if boxes_cpu.numel() == 0:
+                            print("No boxes after transform/conversion.")
+                            continue
+
+                        wh = boxes_cpu[:, 2:] - boxes_cpu[:, :2]
+                        areas = wh[:, 0] * wh[:, 1]
+
+                        valid_size = (wh[:, 0] > 0) & (wh[:, 1] > 0)
+                        inside = (
+                                (boxes_cpu[:, 0] >= 0) &
+                                (boxes_cpu[:, 1] >= 0) &
+                                (boxes_cpu[:, 2] <= W) &
+                                (boxes_cpu[:, 3] <= H)
+                        )
+                        valid_labels = (
+                                (labels_cpu >= 0) &
+                                (labels_cpu < num_classes)
+                        )
+
+                        print(f"labels unique: {sorted(labels_cpu.unique().tolist())}")
+                        print(f"labels min/max: {labels_cpu.min().item()} / {labels_cpu.max().item()}")
+                        print(f"valid labels: {valid_labels.sum().item()} / {len(labels_cpu)}")
+
+                        print(f"valid box size: {valid_size.sum().item()} / {len(boxes_cpu)}")
+                        print(f"inside image: {inside.sum().item()} / {len(boxes_cpu)}")
+
+                        print(
+                            "box xyxy min/max:",
+                            round(boxes_cpu.min().item(), 3),
+                            round(boxes_cpu.max().item(), 3),
+                        )
+
+                        print(
+                            "width min/mean/max:",
+                            round(wh[:, 0].min().item(), 3),
+                            round(wh[:, 0].mean().item(), 3),
+                            round(wh[:, 0].max().item(), 3),
+                        )
+
+                        print(
+                            "height min/mean/max:",
+                            round(wh[:, 1].min().item(), 3),
+                            round(wh[:, 1].mean().item(), 3),
+                            round(wh[:, 1].max().item(), 3),
+                        )
+
+                        print(
+                            "area min/mean/max:",
+                            round(areas.min().item(), 3),
+                            round(areas.mean().item(), 3),
+                            round(areas.max().item(), 3),
+                        )
+
+                        small = areas < 32 ** 2
+                        medium = (areas >= 32 ** 2) & (areas < 96 ** 2)
+                        large = areas >= 96 ** 2
+
+                        print(
+                            f"COCO area buckets: "
+                            f"small={small.sum().item()}, "
+                            f"medium={medium.sum().item()}, "
+                            f"large={large.sum().item()}"
+                        )
+
+                        print("\nraw boxes sample:")
+                        print(box_raw[:5])
+
+                        print("\nconverted pixel xyxy sample:")
+                        print(boxes_cpu[:5])
+
+                        print("\nlabels sample:")
+                        print(labels_cpu[:20])
+
+                        bad = ~(valid_size & inside & valid_labels)
+                        if bad.any():
+                            bad_idx = torch.where(bad)[0][:10]
+                            print("\nBAD TARGET EXAMPLES:")
+                            for bi in bad_idx:
+                                print(
+                                    f"idx={bi.item()} "
+                                    f"box={boxes_cpu[bi].tolist()} "
+                                    f"wh={wh[bi].tolist()} "
+                                    f"label={labels_cpu[bi].item()} "
+                                    f"valid_size={valid_size[bi].item()} "
+                                    f"inside={inside[bi].item()} "
+                                    f"valid_label={valid_labels[bi].item()}"
+                                )
 
                 true_labels.append(target_dict)
 
             status = f"[Validation][{i+1}]"
 
             iterator.set_description(status)
-        if self.cfg.model.name == "yolo":
-            cat_id = int(self.cfg.dataset.nc) - 1
-            cat_name = self.cfg.dataset.names[cat_id]
-            return utils.coco_eval(true_labels, preds, cat_id=cat_id, cat_name=cat_name)
-        return utils.coco_eval(true_labels, preds)
+
+        return utils.coco_eval(true_labels, preds, self.cfg.dataset.names)

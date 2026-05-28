@@ -469,7 +469,10 @@ from omegaconf import DictConfig, OmegaConf
 
 def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
     if 'nc' not in cfg_yaml.dataset:
-        cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+        try:
+            cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+        except:
+            OmegaConf.update(cfg_yaml, "dataset.nc", len(cfg_yaml.dataset.names), force_add=True)
     model_name = OmegaConf.select(cfg_yaml, "model.name")
     if model_name == "yolo":
         names = OmegaConf.select(cfg_yaml, "dataset.names")
@@ -479,7 +482,10 @@ def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
                 cls for cls in names
                 if cls != "__background__"
             ]
-            cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+            try:
+                cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+            except :
+                OmegaConf.update(cfg_yaml, "dataset.nc", len(cfg_yaml.dataset.names), force_add=True)
     print(cfg_yaml)
     return cfg_yaml
 
@@ -509,29 +515,37 @@ def run_python_script_string(
 
     return exec_globals
 
-import torch
-
-
-def boxes_to_xyxy(boxes, box_format: str):
+def boxes_to_xyxy(
+    boxes,
+    box_format: str,
+    image_size=None,
+    normalized: bool = False,
+    clip: bool = False,
+):
     """
-    Convert boxes to xyxy format.
+    Convert boxes to pixel xyxy format.
 
     Args:
         boxes:
             Tensor-like of shape [N, 4].
         box_format:
-            One of:
-              - "xyxy":   [x_min, y_min, x_max, y_max]
-              - "xywh":   [x_min, y_min, width, height]
-              - "cxcywh": [center_x, center_y, width, height]
+            - "xyxy":   [x_min, y_min, x_max, y_max]
+            - "xywh":   [x_min, y_min, width, height]
+            - "cxcywh": [center_x, center_y, width, height]
+        image_size:
+            Optional (height, width). Required if normalized=True or clip=True.
+        normalized:
+            If True, input boxes are in [0, 1] and will be scaled to pixels.
+        clip:
+            If True, clip output xyxy boxes to image boundaries.
 
     Returns:
-        Tensor of shape [N, 4] in xyxy format.
+        Tensor of shape [N, 4] in pixel xyxy format.
     """
     boxes = torch.as_tensor(boxes)
 
     if boxes.numel() == 0:
-        return boxes.reshape(-1, 4)
+        return boxes.reshape(-1, 4).float()
 
     if boxes.ndim == 1:
         boxes = boxes.unsqueeze(0)
@@ -539,33 +553,57 @@ def boxes_to_xyxy(boxes, box_format: str):
     if boxes.shape[-1] != 4:
         raise ValueError(f"Expected boxes shape [N, 4], got {tuple(boxes.shape)}")
 
-    if box_format == "xyxy":
-        return boxes.clone()
+    boxes = boxes.clone().float()
 
-    if box_format == "xywh":
+    if normalized:
+        if image_size is None:
+            raise ValueError("image_size=(height, width) is required when normalized=True")
+
+        height, width = image_size
+        boxes[:, [0, 2]] *= float(width)
+        boxes[:, [1, 3]] *= float(height)
+
+    if box_format == "xyxy":
+        out = boxes
+
+    elif box_format == "xywh":
         x1 = boxes[:, 0]
         y1 = boxes[:, 1]
         w = boxes[:, 2]
         h = boxes[:, 3]
 
-        x2 = x1 + w
-        y2 = y1 + h
+        out = torch.stack(
+            [x1, y1, x1 + w, y1 + h],
+            dim=1,
+        )
 
-        return torch.stack([x1, y1, x2, y2], dim=1)
-
-    if box_format == "cxcywh":
+    elif box_format == "cxcywh":
         cx = boxes[:, 0]
         cy = boxes[:, 1]
         w = boxes[:, 2]
         h = boxes[:, 3]
 
-        x1 = cx - 0.5 * w
-        y1 = cy - 0.5 * h
-        x2 = cx + 0.5 * w
-        y2 = cy + 0.5 * h
+        out = torch.stack(
+            [
+                cx - 0.5 * w,
+                cy - 0.5 * h,
+                cx + 0.5 * w,
+                cy + 0.5 * h,
+            ],
+            dim=1,
+        )
 
-        return torch.stack([x1, y1, x2, y2], dim=1)
+    else:
+        raise ValueError(
+            f"Unknown box_format={box_format}. Expected one of: 'xyxy', 'xywh', 'cxcywh'."
+        )
 
-    raise ValueError(
-        f"Unknown box_format={box_format}. Expected one of: 'xyxy', 'xywh', 'cxcywh'."
-    )
+    if clip:
+        if image_size is None:
+            raise ValueError("image_size=(height, width) is required when clip=True")
+
+        height, width = image_size
+        out[:, [0, 2]] = out[:, [0, 2]].clamp(0, float(width))
+        out[:, [1, 3]] = out[:, [1, 3]].clamp(0, float(height))
+
+    return out

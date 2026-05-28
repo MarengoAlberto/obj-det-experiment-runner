@@ -6,6 +6,7 @@ checkpoints/
 wandb/
 experiments/
 evaluation/
+VisDrone/
 
 *.DS_Store
 *.log

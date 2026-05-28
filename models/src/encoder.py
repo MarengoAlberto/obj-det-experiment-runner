@@ -287,71 +287,71 @@ class YOLODataEncoder:
                 assigned_classes[chosen_indices] = classes[box_i]
                 assigned_cost[chosen_indices] = chosen_dist
 
-            # Repair pass goes here
-            for box_i in range(boxes.shape[0]):
-                if (assigned_box_ids == box_i).any():
+        # Repair pass goes here
+        for box_i in range(boxes.shape[0]):
+            if (assigned_box_ids == box_i).any():
+                continue
+
+            gt_ctr = box_centers[box_i]
+            gt_w = box_w[box_i]
+            gt_h = box_h[box_i]
+            gt_size = box_size[box_i]
+
+            allowed = allowed_strides_for_box(gt_w, gt_h, gt_size)
+
+            best_unassigned_idx = None
+            best_unassigned_cost = None
+
+            best_any_idx = None
+            best_any_cost = None
+
+            for stride in allowed:
+                level_mask = strides == stride
+
+                if not level_mask.any():
                     continue
 
-                gt_ctr = box_centers[box_i]
-                gt_w = box_w[box_i]
-                gt_h = box_h[box_i]
-                gt_size = box_size[box_i]
+                level_indices = torch.where(level_mask)[0]
+                level_centers = cell_centers[level_indices]
 
-                allowed = allowed_strides_for_box(gt_w, gt_h, gt_size)
+                dist = torch.norm(level_centers - gt_ctr[None, :], dim=1) / float(stride)
 
-                best_unassigned_idx = None
-                best_unassigned_cost = None
+                # Best cell overall, even if already assigned.
+                closest_any_local = torch.argmin(dist)
+                candidate_any_idx = level_indices[closest_any_local]
+                candidate_any_cost = dist[closest_any_local]
 
-                best_any_idx = None
-                best_any_cost = None
+                if best_any_cost is None or candidate_any_cost < best_any_cost:
+                    best_any_cost = candidate_any_cost
+                    best_any_idx = candidate_any_idx
 
-                for stride in allowed:
-                    level_mask = strides == stride
+                # Best currently unassigned cell.
+                unassigned_mask = assigned_box_ids[level_indices] < 0
 
-                    if not level_mask.any():
-                        continue
+                if unassigned_mask.any():
+                    unassigned_indices = level_indices[unassigned_mask]
+                    unassigned_dist = dist[unassigned_mask]
 
-                    level_indices = torch.where(level_mask)[0]
-                    level_centers = cell_centers[level_indices]
+                    closest_unassigned_local = torch.argmin(unassigned_dist)
+                    candidate_unassigned_idx = unassigned_indices[closest_unassigned_local]
+                    candidate_unassigned_cost = unassigned_dist[closest_unassigned_local]
 
-                    dist = torch.norm(level_centers - gt_ctr[None, :], dim=1) / float(stride)
+                    if best_unassigned_cost is None or candidate_unassigned_cost < best_unassigned_cost:
+                        best_unassigned_cost = candidate_unassigned_cost
+                        best_unassigned_idx = candidate_unassigned_idx
 
-                    # Best cell overall, even if already assigned.
-                    closest_any_local = torch.argmin(dist)
-                    candidate_any_idx = level_indices[closest_any_local]
-                    candidate_any_cost = dist[closest_any_local]
+            # Prefer an unassigned cell. If impossible, overwrite the closest cell.
+            if best_unassigned_idx is not None:
+                chosen = best_unassigned_idx
+                cost = best_unassigned_cost
+            else:
+                chosen = best_any_idx
+                cost = best_any_cost
 
-                    if best_any_cost is None or candidate_any_cost < best_any_cost:
-                        best_any_cost = candidate_any_cost
-                        best_any_idx = candidate_any_idx
-
-                    # Best currently unassigned cell.
-                    unassigned_mask = assigned_box_ids[level_indices] < 0
-
-                    if unassigned_mask.any():
-                        unassigned_indices = level_indices[unassigned_mask]
-                        unassigned_dist = dist[unassigned_mask]
-
-                        closest_unassigned_local = torch.argmin(unassigned_dist)
-                        candidate_unassigned_idx = unassigned_indices[closest_unassigned_local]
-                        candidate_unassigned_cost = unassigned_dist[closest_unassigned_local]
-
-                        if best_unassigned_cost is None or candidate_unassigned_cost < best_unassigned_cost:
-                            best_unassigned_cost = candidate_unassigned_cost
-                            best_unassigned_idx = candidate_unassigned_idx
-
-                # Prefer an unassigned cell. If impossible, overwrite the closest cell.
-                if best_unassigned_idx is not None:
-                    chosen = best_unassigned_idx
-                    cost = best_unassigned_cost
-                else:
-                    chosen = best_any_idx
-                    cost = best_any_cost
-
-                if chosen is not None:
-                    assigned_box_ids[chosen] = box_i
-                    assigned_classes[chosen] = classes[box_i]
-                    assigned_cost[chosen] = cost
+            if chosen is not None:
+                assigned_box_ids[chosen] = box_i
+                assigned_classes[chosen] = classes[box_i]
+                assigned_cost[chosen] = cost
 
             if self.debug:
                 num_zero = 0

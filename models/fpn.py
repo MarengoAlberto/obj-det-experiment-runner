@@ -16,6 +16,8 @@ class FPNModel(BaseModel):
 
     def __init__(self, cfg, load_model=True, *args, **kwargs):
 
+        cfg = utils.handle_yaml(cfg)
+
         # Initialize Logger
         self.logger = utils.get_logger(cfg.model.name)
 
@@ -35,11 +37,11 @@ class FPNModel(BaseModel):
 
         self.height = cfg.model.image_size[0]
         self.width = cfg.model.image_size[1]
-        self.transform = utils.get_inference_transforms(height=self.height, width=self.width)
+        self.transform = utils.get_inference_transforms(height=self.height, width=self.width, box_format=cfg.dataset.metadata.box_format)
         self.classes = cfg.dataset.names
         self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
 
-        self.cfg = utils.handle_yaml(cfg)
+        self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.logger.info(f"Using device: {self.device}")
 
@@ -83,7 +85,7 @@ class FPNModel(BaseModel):
         self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
             if 'download' in data_yaml and url is None:
-                utils.run_python_file(
+                utils.run_python_script_string(
                     script=data_yaml.download,
                     context={
                         "yaml": OmegaConf.to_container(data_yaml, resolve=True),
@@ -196,10 +198,17 @@ class FPNModel(BaseModel):
                 boxes_raw_per_image = box_raw.to(self.device)
                 labels_raw_per_image = label_raw.to(self.device)
 
+                img_size = (self.height, self.width)
+                boxes_xyxy = utils.boxes_to_xyxy(boxes_raw_per_image,
+                                                 box_format=self.cfg.dataset.metadata.box_format,
+                                                 image_size=img_size,
+                                                 normalized=self.cfg.dataset.metadata.box_normalized,
+                                                 clip=True)
+
                 target_dict = dict(
-                    boxes=utils.boxes_to_xyxy(boxes_raw_per_image, self.cfg.dataset.metadata.box_format),
+                    boxes=boxes_xyxy,
                     labels=labels_raw_per_image,
-                    img_size = original_size
+                    img_size=img_size
                 )
 
                 targets.append(target_dict)
@@ -208,4 +217,4 @@ class FPNModel(BaseModel):
 
             iterator.set_description(status)
 
-        return utils.coco_eval(targets, preds)
+        return utils.coco_eval(targets, preds, self.cfg.dataset.names)
