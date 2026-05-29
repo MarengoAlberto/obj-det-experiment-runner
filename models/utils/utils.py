@@ -498,39 +498,74 @@ def is_dist_avail_and_initialized() -> bool:
 def get_rank() -> int:
     if is_dist_avail_and_initialized():
         return dist.get_rank()
-    return 0
 
+    # Works under torchrun even before init_process_group()
+    if "RANK" in os.environ:
+        return int(os.environ["RANK"])
+
+    return 0
 
 def is_main_process() -> bool:
     return get_rank() == 0
-
 
 def distributed_barrier():
     if is_dist_avail_and_initialized():
         dist.barrier()
 
-
 def run_python_script_string_once(
     script: str,
     context: dict[str, Any] | None = None,
-    run_on_rank: int = 0,
+    marker_path: str = "dataset/.script_complete",
+    lock_path: str = "dataset/.script.lock",
+    timeout: int = 3600,
 ) -> dict[str, Any] | None:
     """
-    Run Python code from a string on only one distributed rank.
+    Run a Python script once across torchrun/DDP workers.
 
-    Other ranks wait at a barrier before continuing.
-
-    Returns:
-        globals dict on the rank that executed the script.
-        None on other ranks.
+    Rank 0 executes.
+    Other ranks wait for marker_path.
+    Works even before torch.distributed.init_process_group(),
+    because it uses os.environ['RANK'] fallback.
     """
+    marker = Path(marker_path)
+    lock = Path(lock_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+
+    rank = get_rank()
     result = None
 
-    if get_rank() == run_on_rank:
-        result = run_python_script_string(script, context=context)
+    if marker.exists():
+        return None
+
+    if rank == 0:
+        # Simple lock so accidental duplicate launch on same node is safer.
+        lock_fd = None
+        try:
+            lock_fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(lock_fd, str(os.getpid()).encode("utf-8"))
+
+            if not marker.exists():
+                result = run_python_script_string(script, context=context)
+
+                # Write marker only after success.
+                marker.write_text("ok\n", encoding="utf-8")
+
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+
+    else:
+        start = time.time()
+        while not marker.exists():
+            if time.time() - start > timeout:
+                raise TimeoutError(f"Timed out waiting for dataset setup marker: {marker}")
+            time.sleep(1.0)
 
     distributed_barrier()
-
     return result
 
 def run_python_script_string(
