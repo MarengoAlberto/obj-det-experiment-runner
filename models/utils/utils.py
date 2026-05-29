@@ -184,38 +184,153 @@ def to_python_number(value):
 
     raise TypeError(f"Unsupported metric value type: {type(value)}")
 
-def merge_metric_dicts(*dicts: Mapping, prefix_conflicts: bool = False) -> dict[str, float]:
+def refactor_dict(d: dict, prefix: str) -> dict:
     """
-    Merge multiple metric dicts and convert values to plain Python numbers.
+    Add a prefix to all top-level keys.
 
-    Args:
-        *dicts: Metric dictionaries.
-        prefix_conflicts: If True, later duplicate keys are allowed only if
-            you pre-prefix keys yourself before calling this. Otherwise duplicates error.
+    Example:
+        {"loss": 1.0} with prefix="train" -> {"train_loss": 1.0}
+    """
+    if d is None:
+        return {}
 
-    Returns:
-        Flat dict with Python scalar values.
+    return {f"{prefix}_{k}": v for k, v in d.items()}
+
+def _metric_value_to_float(value: Any) -> float | None:
+    """
+    Convert scalar-like metric values to Python float.
+
+    Returns None for non-scalar tensors/arrays/lists.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.numel() == 1:
+            return float(value.item())
+        return None
+
+    if isinstance(value, np.ndarray):
+        if value.size == 1:
+            return float(value.item())
+        return None
+
+    if isinstance(value, np.generic):
+        return float(value.item())
+
+    if isinstance(value, numbers.Number):
+        return float(value)
+
+    return None
+
+def merge_metric_dicts(
+    *dicts: Mapping,
+    prefix_conflicts: bool = False,
+    class_names: list[str] | None = None,
+    drop_classes_vector: bool = True,
+) -> dict[str, float]:
+    """
+    Merge metric dictionaries into a flat W&B-safe scalar dict.
+
+    Handles:
+      - scalar tensors -> float
+      - scalar numpy values -> float
+      - vector tensors -> expanded as key/class_name or key/index
+      - nested dicts -> flattened recursively
+      - classes vector -> dropped by default
+
+    Example:
+        {"val_map_per_class": tensor([0.1, 0.2])}
+        ->
+        {
+            "val_map_per_class/class0": 0.1,
+            "val_map_per_class/class1": 0.2,
+        }
     """
     merged: dict[str, float] = {}
 
-    for metric_dict in dicts:
-        for key, value in metric_dict.items():
-            if isinstance(value, dict):
-                continue
-            if not isinstance(key, str):
-                key = str(key)
+    def add_metric(key: str, value: float):
+        key = str(key)
 
-            if key in merged and not prefix_conflicts:
-                raise KeyError(f"Duplicate metric key: {key}")
-            num_value = to_python_number(value)
-            if num_value is not None:
-                merged[key] = cast(float, num_value)
+        if key in merged and not prefix_conflicts:
+            raise KeyError(f"Duplicate metric key: {key}")
+
+        merged[key] = float(value)
+
+    def consume(prefix: str, value: Any):
+        prefix = str(prefix)
+
+        # Flatten nested dictionaries.
+        if isinstance(value, Mapping):
+            for k, v in value.items():
+                new_key = f"{prefix}_{k}" if prefix else str(k)
+                consume(new_key, v)
+            return
+
+        # Drop class index vectors like tensor([0, 1, ..., 9]).
+        if drop_classes_vector and prefix.endswith("classes"):
+            return
+
+        # Scalar values.
+        scalar = _metric_value_to_float(value)
+        if scalar is not None:
+            add_metric(prefix, scalar)
+            return
+
+        # Torch vector.
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu()
+
+            if value.ndim == 1:
+                for i, v in enumerate(value.tolist()):
+                    suffix = class_names[i] if class_names and i < len(class_names) else str(i)
+                    add_metric(f"{prefix}/{suffix}", float(v))
+            return
+
+        # NumPy vector.
+        if isinstance(value, np.ndarray):
+            if value.ndim == 1:
+                for i, v in enumerate(value.tolist()):
+                    suffix = class_names[i] if class_names and i < len(class_names) else str(i)
+                    add_metric(f"{prefix}/{suffix}", float(v))
+            return
+
+        # Python list/tuple vector.
+        if isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                return
+
+            if all(isinstance(x, numbers.Number) for x in value):
+                if len(value) == 1:
+                    add_metric(prefix, float(value[0]))
+                else:
+                    for i, v in enumerate(value):
+                        suffix = class_names[i] if class_names and i < len(class_names) else str(i)
+                        add_metric(f"{prefix}/{suffix}", float(v))
+            return
+
+        # Ignore unsupported values.
+
+    for metric_dict in dicts:
+        if metric_dict is None:
+            continue
+
+        # Handles accidental tuple-wrapped dicts like ({...},)
+        if isinstance(metric_dict, tuple):
+            for item in metric_dict:
+                if isinstance(item, Mapping):
+                    for k, v in item.items():
+                        consume(str(k), v)
+            continue
+
+        if not isinstance(metric_dict, Mapping):
+            continue
+
+        for key, value in metric_dict.items():
+            consume(str(key), value)
 
     return merged
-
-def refactor_dict(d: dict, prefix: str) -> dict:
-    """Add a prefix to all keys in the dictionary."""
-    return {f"{prefix}_{k}": v for k, v in d.items()}
 
 def append_model_results_to_csv(
     csv_path: str | Path,
