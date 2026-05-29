@@ -4,6 +4,8 @@ import torch
 import numbers
 import pandas as pd
 import numpy as np
+import torch
+import torch.distributed as dist
 import requests
 import zipfile
 from typing import Union, cast, Any, Tuple
@@ -488,6 +490,48 @@ def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
                 OmegaConf.update(cfg_yaml, "dataset.nc", len(cfg_yaml.dataset.names), force_add=True)
     print(cfg_yaml)
     return cfg_yaml
+
+def is_dist_avail_and_initialized() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def get_rank() -> int:
+    if is_dist_avail_and_initialized():
+        return dist.get_rank()
+    return 0
+
+
+def is_main_process() -> bool:
+    return get_rank() == 0
+
+
+def distributed_barrier():
+    if is_dist_avail_and_initialized():
+        dist.barrier()
+
+
+def run_python_script_string_once(
+    script: str,
+    context: dict[str, Any] | None = None,
+    run_on_rank: int = 0,
+) -> dict[str, Any] | None:
+    """
+    Run Python code from a string on only one distributed rank.
+
+    Other ranks wait at a barrier before continuing.
+
+    Returns:
+        globals dict on the rank that executed the script.
+        None on other ranks.
+    """
+    result = None
+
+    if get_rank() == run_on_rank:
+        result = run_python_script_string(script, context=context)
+
+    distributed_barrier()
+
+    return result
 
 def run_python_script_string(
     script: str,

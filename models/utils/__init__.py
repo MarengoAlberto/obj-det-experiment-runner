@@ -14,7 +14,7 @@ from .utils import (download_and_unzip_zip,
                     append_model_results_to_csv,
                     find_model_pth_paths,
                     handle_yaml,
-                    run_python_script_string,
+                    run_python_script_string_once,
                     boxes_to_xyxy)
 from .coco_evaluate import coco_eval
 from .visualization import plot_predictions, draw_bbox

@@ -85,7 +85,7 @@ class FPNModel(BaseModel):
         self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
             if 'download' in data_yaml and url is None:
-                utils.run_python_script_string(
+                _ = utils.run_python_script_string_once(
                     script=data_yaml.download,
                     context={
                         "yaml": OmegaConf.to_container(data_yaml, resolve=True),
