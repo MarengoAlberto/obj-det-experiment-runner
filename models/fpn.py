@@ -101,16 +101,20 @@ class FPNModel(BaseModel):
         history = trainer.train(n_epochs=n_epochs, batch_size=batch_size, start_epoch=self.start_epoch)
         self.data_yaml = data_yaml
         coco_eval_results = None
+        final_results = {}
         if coco_eval:
-            split_name = 'test' if 'test' in data_yaml else 'val'
-            coco_eval_results = self.evaluate(split_name)
-            if trainer.wandb:
-                trainer.wandb.log({'coco_eval_results': coco_eval_results})
-                trainer.wandb.finish()
-        return {
-            "history": history,
-            "coco_eval_results": coco_eval_results
-        }
+            if utils.is_main_process():
+                split_name = 'test' if 'test' in data_yaml else 'val'
+                coco_eval_results = self.evaluate(split_name)
+                final_results = {
+                    "history": history,
+                    "coco_eval_results": coco_eval_results
+                }
+                if trainer.wandb:
+                    trainer.wandb.log({'coco_eval_results': coco_eval_results})
+                    trainer.wandb.finish()
+            utils.distributed_barrier()
+        return final_results
 
     def predict(self,
                 image_array,
