@@ -146,7 +146,7 @@ def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
     data_dir = data_cfg.path if "path" in data_cfg else default_data_dir
 
     needs_download = True
-    url = data_cfg.metadata.url if "url" in data_cfg else None
+    url = data_cfg.metadata.url if "url" in data_cfg.metadata else None
     train_folder = os.path.join(data_dir, data_cfg.train.replace('../', ''))
     val_folder = os.path.join(data_dir, data_cfg.val.replace('../', ''))
     if 'test' in data_cfg:

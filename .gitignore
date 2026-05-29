@@ -1,6 +1,6 @@
 outputs/
 trained_model/
-dataset/
+/dataset/
 samples/
 checkpoints/
 wandb/
