@@ -1,19 +1,16 @@
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
 
 from models import Model
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig):
-    if cfg.model.name == 'yolo':
-        cfg.dataset.names = [cls for cls in cfg.dataset.names if cls != '__background__']
-        cfg.dataset.nc = len(cfg.dataset.names)
-    print(cfg)
-    print('-------------------')
-    print(OmegaConf.to_yaml(cfg))
-    print(cfg.model)
     model = Model(cfg, load_model=False)
-    history = model.train(data='configs/dataset/data.yaml',
+    choices = HydraConfig.get().runtime.choices
+    dataset_name = choices["dataset"]
+    dataset_yaml_path = f"configs/dataset/{dataset_name}.yaml"
+    history = model.train(data=dataset_yaml_path,
                           n_epochs=cfg.experiment.train.epochs,
                           batch_size=cfg.experiment.train.batch_size)
     print(history)

@@ -1,11 +1,12 @@
 outputs/
 trained_model/
-dataset/
+/dataset/
 samples/
 checkpoints/
 wandb/
 experiments/
 evaluation/
+VisDrone/
 
 *.DS_Store
 *.log

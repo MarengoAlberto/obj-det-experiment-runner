@@ -7,6 +7,7 @@ import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 
 from ..src import DataEncoder
+from .utils import is_main_process
 from .augmentations import get_augmentations
 
 class DataSetup:
@@ -30,7 +31,8 @@ class DataSetup:
         val_path = self.data.full_val_path
         num_workers = self.cfg.experiment.train.num_workers
 
-        train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width)
+        train_augmentations, valid_augmentations = get_augmentations(height=self.height, width=self.width,
+                                                                     box_format=self.cfg.dataset.metadata.box_format)
 
         # Create custom datasets.
         train_dataset = self.get_dataset(train_path, train_augmentations, train=True)
@@ -72,16 +74,29 @@ class DataSetup:
 
         return train_loader, valid_loader, train_sampler, val_sampler
 
-    def get_one_loader(self, _batch_size):
+    def get_one_loader(self, _batch_size, split_name='val'):
 
         batch_size = _batch_size if _batch_size else self.cfg.experiment.train.batch_size
-        path = self.data.full_val_path
+
+        if split_name == 'train':
+            path = self.data.full_train_path
+        elif split_name == 'val':
+            path = self.data.full_val_path
+        elif split_name == 'test':
+            path = self.data.full_test_path
+        else:
+            raise ValueError(f"Unknown split_name: {split_name}")
+
         num_workers = self.cfg.experiment.train.num_workers
 
-        _, valid_augmentations = get_augmentations(height=self.height, width=self.width)
+        train_augmentation, valid_augmentations = get_augmentations(height=self.height, width=self.width,
+                                                                     box_format=self.cfg.dataset.metadata.box_format)
 
         # Create custom dataset.
-        dataset = self.get_dataset(path, valid_augmentations, train=False)
+        if split_name == 'train':
+            dataset = self.get_dataset(path, train_augmentation, train=True)
+        else:
+            dataset = self.get_dataset(path, valid_augmentations, train=False)
 
         loader = DataLoader(
             dataset,
@@ -95,6 +110,11 @@ class DataSetup:
         return loader
 
     def get_dataset(self, path, trasform_function, train=True):
+
+        if 'is_standard_folder_structure' in self.cfg.dataset.metadata:
+            is_standard_folder_structure = self.cfg.dataset.metadata.is_standard_folder_structure
+        else:
+            is_standard_folder_structure = True
         if self.cfg.model.name == "fpn":
             dataset = FPNDataset(
                 data_path=path,
@@ -104,6 +124,7 @@ class DataSetup:
                 input_size=self.image_size,
                 is_train=train,
                 debug=self.cfg.experiment.train.debug,
+                is_standard_folder_structure=is_standard_folder_structure,
             )
         elif self.cfg.model.name == "yolo":
             dataset = YoloDataset(
@@ -114,6 +135,7 @@ class DataSetup:
                 input_size=self.image_size,
                 is_train=train,
                 debug=self.cfg.experiment.train.debug,
+                is_standard_folder_structure=is_standard_folder_structure,
             )
         else:
              raise ValueError(f"Unknown model_type: {self.cfg.model.name}")
@@ -128,7 +150,8 @@ class FPNDataset(Dataset):
         transform=None,
         is_train=True,
         input_size=(300, 300, 3),
-        debug=False
+        debug=False,
+        is_standard_folder_structure=True,
     ):
         self.data_path = os.path.expanduser(data_path)
         self.classes = classes
@@ -137,8 +160,11 @@ class FPNDataset(Dataset):
         self.is_train = is_train
         self.encoder = data_encoder
 
-        self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path, train=is_train, shuffle=is_train, debug=debug)
-
+        self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path,
+                                                                                        train=is_train,
+                                                                                        shuffle=is_train,
+                                                                                        debug=debug,
+                                                                                        is_standard_folder_structure=is_standard_folder_structure)
     def __len__(self):
         # Get size of the Dataset.
         return self.num_samples
@@ -197,10 +223,12 @@ def list_files_in_directory(directory_path):
         files = [entry for entry in entries if os.path.isfile(os.path.join(directory_path, entry))]
         return files
     except FileNotFoundError:
-        print(f"Error: Directory '{directory_path}' not found.")
+        if is_main_process():
+            print(f"Error: Directory '{directory_path}' not found.")
         return []
 
-def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
+
+def load_groundtruths(data_path, train=True, shuffle=True, debug=False, is_standard_folder_structure=True):
     image_paths = []
     boxes = []
     labels = []
@@ -209,7 +237,10 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
     num_samples = len(file_names)
     for image_name in file_names:
         image_id, _ = os.path.splitext(os.path.basename(image_name))
-        filepath = os.path.join(data_path, 'Label', image_id+'.txt')
+        if is_standard_folder_structure:
+            filepath = os.path.join(data_path.replace('images', 'labels'), image_id + '.txt')
+        else:
+            filepath = os.path.join(data_path, 'Label', image_id + '.txt')
 
         with open(filepath) as f:
             lines = f.readlines()
@@ -219,19 +250,23 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
         label = []
 
         for line in lines:
-            splited = line.strip().split()[-4:]
-            xmin = splited[0]
-            ymin = splited[1]
-            xmax = splited[2]
-            ymax = splited[3]
+            splited = line.strip().split()
+            bbox = splited[-4:]
+            xmin = bbox[0]
+            ymin = bbox[1]
+            xmax = bbox[2]
+            ymax = bbox[3]
 
-            class_label = int(1)
+            if is_standard_folder_structure:
+                class_label = int(splited[0])
+            else:
+                class_label = int(1)
             box.append([float(xmin), float(ymin), float(xmax), float(ymax)])
             label.append(class_label)
         boxes.append(box)
         labels.append(label)
-
-    print(f"Total {num_samples} images and {len(boxes)} boxes loaded from: {os.path.relpath(data_path, os.getcwd())}")
+    if is_main_process():
+        print(f"Total {num_samples} images and {sum(len(image_boxes) for image_boxes in boxes)} boxes and {sum(len(image_label) for image_label in labels)} labels loaded from: {os.path.relpath(data_path, os.getcwd())}")
 
     # Shuffle or Sort
     if shuffle:
@@ -250,32 +285,62 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False):
             num_samples = 100
         else:
             num_samples = 10
-        print(f"Debug mode enabled: Only using {num_samples} samples for set: {'train' if train else 'validation'}")
+        if is_main_process():
+            print(f"Debug mode enabled: Only using {num_samples} samples for set: {'train' if train else 'validation'}")
         image_paths = image_paths[:num_samples]
         boxes = boxes[:num_samples]
         labels = labels[:num_samples]
 
     return image_paths, boxes, labels, num_samples
 
-def filter_valid_boxes(boxes, labels=None, min_size=1e-6):
-    valid_boxes = []
-    valid_labels = [] if labels is not None else None
+def filter_valid_boxes(boxes, labels=None, box_format="xyxy", min_size=1e-6):
+    """
+    Filter invalid boxes while respecting box format.
 
-    for i, box in enumerate(boxes):
-        x_min, y_min, x_max, y_max = box[:4]
+    box_format:
+      - "xyxy":   [x_min, y_min, x_max, y_max]
+      - "xywh":   [x_min, y_min, width, height]
+      - "cxcywh": [center_x, center_y, width, height]
+    """
+    boxes_t = torch.as_tensor(boxes)
 
-        width = x_max - x_min
-        height = y_max - y_min
+    if boxes_t.numel() == 0:
+        empty_boxes = []
+        empty_labels = [] if labels is not None else None
+        return (empty_boxes, empty_labels) if labels is not None else empty_boxes
 
-        if width > min_size and height > min_size:
-            valid_boxes.append(box)
-            if labels is not None:
-                valid_labels.append(labels[i])
+    if boxes_t.ndim == 1:
+        boxes_t = boxes_t.unsqueeze(0)
+
+    if boxes_t.shape[1] < 4:
+        raise ValueError(f"Expected boxes with at least 4 values, got shape {boxes_t.shape}")
+
+    if box_format == "xyxy":
+        widths = boxes_t[:, 2] - boxes_t[:, 0]
+        heights = boxes_t[:, 3] - boxes_t[:, 1]
+
+    elif box_format in ("xywh", "cxcywh"):
+        widths = boxes_t[:, 2]
+        heights = boxes_t[:, 3]
+
+    else:
+        raise ValueError(
+            f"Unknown box_format={box_format}. Expected 'xyxy', 'xywh', or 'cxcywh'."
+        )
+
+    valid = (widths > min_size) & (heights > min_size)
+
+    filtered_boxes = boxes_t[valid].tolist()
 
     if labels is not None:
-        return valid_boxes, valid_labels
+        labels_t = torch.as_tensor(labels)
+        if labels_t.ndim == 0:
+            labels_t = labels_t.unsqueeze(0)
 
-    return valid_boxes
+        filtered_labels = labels_t[valid].tolist()
+        return filtered_boxes, filtered_labels
+
+    return filtered_boxes
 
 class YoloDataset(FPNDataset):
 
@@ -287,14 +352,13 @@ class YoloDataset(FPNDataset):
         image_path = self.image_paths[idx]
         indexed_boxes = self.boxes[idx]
         indexed_labels = self.labels[idx]
-
         img = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
 
         height = img.shape[0]
         width = img.shape[1]
 
         if self.transforms:
-            indexed_boxes, indexed_labels = filter_valid_boxes(indexed_boxes, indexed_labels)
+            indexed_boxes, indexed_labels = filter_valid_boxes(indexed_boxes, indexed_labels, self.encoder.box_format)
             transformed = self.transforms(image=img, bboxes=indexed_boxes, category_ids=indexed_labels)
 
         else:  # Mandatory transforms to be applied.

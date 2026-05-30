@@ -3,6 +3,7 @@ from tqdm.auto import tqdm
 import numpy as np
 
 from .fpn_trainer import FPNTrainer
+from ..utils import boxes_to_xyxy
 
 class YOLOTrainer(FPNTrainer):
 
@@ -115,7 +116,11 @@ class YOLOTrainer(FPNTrainer):
                 labels_raw_per_image = label_raw.to(self.device)
 
                 target_dict = dict(
-                    boxes=boxes_raw_per_image,
+                    boxes=boxes_to_xyxy(boxes_raw_per_image,
+                                        box_format=self.cfg.dataset.metadata.box_format,
+                                        image_size=(self.wrapper.height, self.wrapper.width),
+                                        normalized=self.cfg.dataset.metadata.box_normalized,
+                                        clip=True),
                     labels=labels_raw_per_image
                 )
 

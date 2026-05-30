@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 from torchinfo import summary
+from omegaconf import OmegaConf
 
 from .base_model import BaseModel
 from .trainers import get_trainer
@@ -11,8 +12,11 @@ from . import utils, src
 class FPNModel(BaseModel):
 
     start_epoch = 0
+    data_yaml = None
 
     def __init__(self, cfg, load_model=True, *args, **kwargs):
+
+        cfg = utils.handle_yaml(cfg)
 
         # Initialize Logger
         self.logger = utils.get_logger(cfg.model.name)
@@ -25,21 +29,24 @@ class FPNModel(BaseModel):
             if load_model:
                 self.model, self.start_epoch = utils.load_model(self.model, cfg.model.metadata.best_model_folder, *args, **kwargs)
         except FileNotFoundError as e:
-            self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
-
-        self.logger.info(summary(self.model,
-                                 input_size=(1,) + tuple(cfg.model.image_size)[::-1],
-                                 row_settings=["var_names"]))
+            if utils.is_main_process():
+                self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
+        if utils.is_main_process():
+            self.logger.info(summary(self.model,
+                                     input_size=(1,) + tuple(cfg.model.image_size)[::-1],
+                                     row_settings=["var_names"]))
 
         self.height = cfg.model.image_size[0]
         self.width = cfg.model.image_size[1]
-        self.transform = utils.get_inference_transforms(height=self.height, width=self.width)
+        self.transform = utils.get_inference_transforms(height=self.height, width=self.width, box_format=cfg.dataset.metadata.box_format)
         self.classes = cfg.dataset.names
-        self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
+        if utils.is_main_process():
+            self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
 
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"Using device: {self.device}")
+        if utils.is_main_process():
+            self.logger.info(f"Using device: {self.device}")
 
     def __call__(self, image_path, *args, **kwargs):
 
@@ -77,26 +84,42 @@ class FPNModel(BaseModel):
     def train(self, data, n_epochs=None, batch_size=None, data_dir='dataset', coco_eval=True):
 
         # Check if data is already downloaded and preprocessed, if not, do it.
-        needs_download, url, data_yaml = utils.check_data_exists(data, data_dir)
-        self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
+        needs_download, url, data_yaml = utils.check_data_exists(data)
+        if utils.is_main_process():
+            self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
-            self.logger.info(f"Downloading data from {url}")
-            utils.download_and_unzip_zip(url, data_dir)
+            if 'download' in data_yaml and url is None:
+                _ = utils.run_python_script_string_once(
+                    script=data_yaml.download,
+                    context={
+                        "yaml": OmegaConf.to_container(data_yaml, resolve=True),
+                    },
+                )
+            else:
+                if utils.is_main_process():
+                    self.logger.info(f"Downloading data from {url}")
+                utils.download_and_unzip_zip(url, data_dir)
 
         # Initialize Trainer
         trainer = self.trainer_cls(self, data_yaml, self.cfg, logger=self.logger, close_when_done=(not coco_eval))
         # Start Training
         history = trainer.train(n_epochs=n_epochs, batch_size=batch_size, start_epoch=self.start_epoch)
+        self.data_yaml = data_yaml
         coco_eval_results = None
+        final_results = {}
         if coco_eval:
-            coco_eval_results = self.evaluate(self.cfg.dataset.val.replace('..', data_dir))
-            if trainer.wandb:
-                trainer.wandb.log({'coco_eval_results': coco_eval_results})
-                trainer.wandb.finish()
-        return {
-            "history": history,
-            "coco_eval_results": coco_eval_results
-        }
+            if utils.is_main_process():
+                split_name = 'test' if 'test' in data_yaml else 'val'
+                coco_eval_results = self.evaluate(split_name)
+                final_results = {
+                    "history": history,
+                    "coco_eval_results": coco_eval_results
+                }
+                if trainer.wandb:
+                    trainer.wandb.log({'coco_eval_results': coco_eval_results})
+                    trainer.wandb.finish()
+            utils.distributed_barrier()
+        return final_results
 
     def predict(self,
                 image_array,
@@ -150,11 +173,12 @@ class FPNModel(BaseModel):
             "total_loss": total_loss.item() if criterion and y_true else None
         }
 
-    def evaluate(self, data_folder, batch_size=64):
+    def evaluate(self, split_name, batch_size=64):
+        if self.data_yaml is None:
+            raise ValueError("Data yaml is not loaded. Please load data first.")
 
-        data = utils.get_val_yaml_file_path(data_folder)
-        data_class = utils.DataSetup(self.cfg, data, self.data_encoder)
-        loader = data_class.get_one_loader(batch_size)
+        data_class = utils.DataSetup(self.cfg, self.data_yaml, self.data_encoder)
+        loader = data_class.get_one_loader(batch_size, split_name=split_name)
 
         iterator = tqdm(loader, dynamic_ncols=True)
 
@@ -183,10 +207,17 @@ class FPNModel(BaseModel):
                 boxes_raw_per_image = box_raw.to(self.device)
                 labels_raw_per_image = label_raw.to(self.device)
 
+                img_size = (self.height, self.width)
+                boxes_xyxy = utils.boxes_to_xyxy(boxes_raw_per_image,
+                                                 box_format=self.cfg.dataset.metadata.box_format,
+                                                 image_size=img_size,
+                                                 normalized=self.cfg.dataset.metadata.box_normalized,
+                                                 clip=True)
+
                 target_dict = dict(
-                    boxes=boxes_raw_per_image,
+                    boxes=boxes_xyxy,
                     labels=labels_raw_per_image,
-                    img_size = original_size
+                    img_size=img_size
                 )
 
                 targets.append(target_dict)
@@ -195,4 +226,4 @@ class FPNModel(BaseModel):
 
             iterator.set_description(status)
 
-        return utils.coco_eval(targets, preds)
+        return utils.coco_eval(targets, preds, self.cfg.dataset.names)

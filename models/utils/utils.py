@@ -1,19 +1,18 @@
 import os
 import time
-import yaml
 import torch
 import numbers
 import pandas as pd
 import numpy as np
+import torch
+import torch.distributed as dist
 import requests
 import zipfile
 from typing import Union, cast, Any, Tuple
-from box import Box
 from collections.abc import Mapping
 from pathlib import Path
 import json
 import re
-from omegaconf import OmegaConf
 
 def load_model(model, model_folder: str, *args, **kwargs):
     model_name = kwargs.get("model_name", "my_yolo")
@@ -141,15 +140,17 @@ def download_and_unzip_zip(url: str, extract_dir: str = 'dataset', zip_name: Uni
         except FileNotFoundError:
             pass
 
-def check_data_exists(data_path: str, data_dir: str = 'dataset'):
+def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
 
-    with open(data_path, 'r') as file:
-        data = yaml.safe_load(file)
+    data_cfg = OmegaConf.load(yaml_path)
+    data_dir = data_cfg.path if "path" in data_cfg else default_data_dir
 
     needs_download = True
-    url = data['metadata']['url']
-    train_folder = os.path.join(data_dir, data['train'].replace('../', ''))
-    val_folder = os.path.join(data_dir, data['val'].replace('../', ''))
+    url = data_cfg.metadata.url if "url" in data_cfg.metadata else None
+    train_folder = os.path.join(data_dir, data_cfg.train.replace('../', ''))
+    val_folder = os.path.join(data_dir, data_cfg.val.replace('../', ''))
+    if 'test' in data_cfg:
+        test_folder = os.path.join(data_dir, data_cfg.test.replace('../', ''))
     if (
         os.path.isdir(train_folder)
         and os.path.isdir(val_folder)
@@ -157,14 +158,11 @@ def check_data_exists(data_path: str, data_dir: str = 'dataset'):
         and bool(os.listdir(val_folder))
     ):
         needs_download = False
-    data['full_train_path'] = train_folder
-    data['full_val_path'] = val_folder
-    return needs_download, url, Box(data)
-
-def get_val_yaml_file_path(data_path):
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Data not found at: {data_path}")
-    return Box({"full_val_path": data_path})
+    data_cfg.full_train_path = train_folder
+    data_cfg.full_val_path = val_folder
+    if 'test' in data_cfg:
+        data_cfg.full_test_path = test_folder
+    return needs_download, url, data_cfg
 
 def to_python_number(value):
     """Convert common tensor/NumPy scalar types to plain Python numbers."""
@@ -186,38 +184,153 @@ def to_python_number(value):
 
     raise TypeError(f"Unsupported metric value type: {type(value)}")
 
-def merge_metric_dicts(*dicts: Mapping, prefix_conflicts: bool = False) -> dict[str, float]:
+def refactor_dict(d: dict, prefix: str) -> dict:
     """
-    Merge multiple metric dicts and convert values to plain Python numbers.
+    Add a prefix to all top-level keys.
 
-    Args:
-        *dicts: Metric dictionaries.
-        prefix_conflicts: If True, later duplicate keys are allowed only if
-            you pre-prefix keys yourself before calling this. Otherwise duplicates error.
+    Example:
+        {"loss": 1.0} with prefix="train" -> {"train_loss": 1.0}
+    """
+    if d is None:
+        return {}
 
-    Returns:
-        Flat dict with Python scalar values.
+    return {f"{prefix}_{k}": v for k, v in d.items()}
+
+def _metric_value_to_float(value: Any) -> float | None:
+    """
+    Convert scalar-like metric values to Python float.
+
+    Returns None for non-scalar tensors/arrays/lists.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.numel() == 1:
+            return float(value.item())
+        return None
+
+    if isinstance(value, np.ndarray):
+        if value.size == 1:
+            return float(value.item())
+        return None
+
+    if isinstance(value, np.generic):
+        return float(value.item())
+
+    if isinstance(value, numbers.Number):
+        return float(value)
+
+    return None
+
+def merge_metric_dicts(
+    *dicts: Mapping,
+    prefix_conflicts: bool = False,
+    class_names: list[str] | None = None,
+    drop_classes_vector: bool = True,
+) -> dict[str, float]:
+    """
+    Merge metric dictionaries into a flat W&B-safe scalar dict.
+
+    Handles:
+      - scalar tensors -> float
+      - scalar numpy values -> float
+      - vector tensors -> expanded as key/class_name or key/index
+      - nested dicts -> flattened recursively
+      - classes vector -> dropped by default
+
+    Example:
+        {"val_map_per_class": tensor([0.1, 0.2])}
+        ->
+        {
+            "val_map_per_class/class0": 0.1,
+            "val_map_per_class/class1": 0.2,
+        }
     """
     merged: dict[str, float] = {}
 
-    for metric_dict in dicts:
-        for key, value in metric_dict.items():
-            if isinstance(value, dict):
-                continue
-            if not isinstance(key, str):
-                key = str(key)
+    def add_metric(key: str, value: float):
+        key = str(key)
 
-            if key in merged and not prefix_conflicts:
-                raise KeyError(f"Duplicate metric key: {key}")
-            num_value = to_python_number(value)
-            if num_value is not None:
-                merged[key] = cast(float, num_value)
+        if key in merged and not prefix_conflicts:
+            raise KeyError(f"Duplicate metric key: {key}")
+
+        merged[key] = float(value)
+
+    def consume(prefix: str, value: Any):
+        prefix = str(prefix)
+
+        # Flatten nested dictionaries.
+        if isinstance(value, Mapping):
+            for k, v in value.items():
+                new_key = f"{prefix}_{k}" if prefix else str(k)
+                consume(new_key, v)
+            return
+
+        # Drop class index vectors like tensor([0, 1, ..., 9]).
+        if drop_classes_vector and prefix.endswith("classes"):
+            return
+
+        # Scalar values.
+        scalar = _metric_value_to_float(value)
+        if scalar is not None:
+            add_metric(prefix, scalar)
+            return
+
+        # Torch vector.
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu()
+
+            if value.ndim == 1:
+                for i, v in enumerate(value.tolist()):
+                    suffix = class_names[i] if class_names and i < len(class_names) else str(i)
+                    add_metric(f"{prefix}/{suffix}", float(v))
+            return
+
+        # NumPy vector.
+        if isinstance(value, np.ndarray):
+            if value.ndim == 1:
+                for i, v in enumerate(value.tolist()):
+                    suffix = class_names[i] if class_names and i < len(class_names) else str(i)
+                    add_metric(f"{prefix}/{suffix}", float(v))
+            return
+
+        # Python list/tuple vector.
+        if isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                return
+
+            if all(isinstance(x, numbers.Number) for x in value):
+                if len(value) == 1:
+                    add_metric(prefix, float(value[0]))
+                else:
+                    for i, v in enumerate(value):
+                        suffix = class_names[i] if class_names and i < len(class_names) else str(i)
+                        add_metric(f"{prefix}/{suffix}", float(v))
+            return
+
+        # Ignore unsupported values.
+
+    for metric_dict in dicts:
+        if metric_dict is None:
+            continue
+
+        # Handles accidental tuple-wrapped dicts like ({...},)
+        if isinstance(metric_dict, tuple):
+            for item in metric_dict:
+                if isinstance(item, Mapping):
+                    for k, v in item.items():
+                        consume(str(k), v)
+            continue
+
+        if not isinstance(metric_dict, Mapping):
+            continue
+
+        for key, value in metric_dict.items():
+            consume(str(key), value)
 
     return merged
-
-def refactor_dict(d: dict, prefix: str) -> dict:
-    """Add a prefix to all keys in the dictionary."""
-    return {f"{prefix}_{k}": v for k, v in d.items()}
 
 def append_model_results_to_csv(
     csv_path: str | Path,
@@ -467,3 +580,224 @@ def find_model_pth_paths(
     ]
 
     return root_matches
+
+from omegaconf import DictConfig, OmegaConf
+
+
+def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
+    if 'nc' not in cfg_yaml.dataset:
+        try:
+            cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+        except:
+            OmegaConf.update(cfg_yaml, "dataset.nc", len(cfg_yaml.dataset.names), force_add=True)
+    model_name = OmegaConf.select(cfg_yaml, "model.name")
+    if model_name == "yolo":
+        names = OmegaConf.select(cfg_yaml, "dataset.names")
+
+        if names is not None:
+            cfg_yaml.dataset.names = [
+                cls for cls in names
+                if cls != "__background__"
+            ]
+            try:
+                cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
+            except :
+                OmegaConf.update(cfg_yaml, "dataset.nc", len(cfg_yaml.dataset.names), force_add=True)
+    print(cfg_yaml)
+    return cfg_yaml
+
+def is_dist_avail_and_initialized() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def get_rank() -> int:
+    if is_dist_avail_and_initialized():
+        return dist.get_rank()
+
+    # Works under torchrun even before init_process_group()
+    if "RANK" in os.environ:
+        return int(os.environ["RANK"])
+
+    return 0
+
+def is_main_process() -> bool:
+    return get_rank() == 0
+
+def distributed_barrier():
+    if is_dist_avail_and_initialized():
+        dist.barrier()
+
+def run_python_script_string_once(
+    script: str,
+    context: dict[str, Any] | None = None,
+    marker_path: str = "dataset/.script_complete",
+    lock_path: str = "dataset/.script.lock",
+    timeout: int = 3600,
+) -> dict[str, Any] | None:
+    """
+    Run a Python script once across torchrun/DDP workers.
+
+    Rank 0 executes.
+    Other ranks wait for marker_path.
+    Works even before torch.distributed.init_process_group(),
+    because it uses os.environ['RANK'] fallback.
+    """
+    marker = Path(marker_path)
+    lock = Path(lock_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+
+    rank = get_rank()
+    result = None
+
+    if marker.exists():
+        return None
+
+    if rank == 0:
+        # Simple lock so accidental duplicate launch on same node is safer.
+        lock_fd = None
+        try:
+            lock_fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(lock_fd, str(os.getpid()).encode("utf-8"))
+
+            if not marker.exists():
+                result = run_python_script_string(script, context=context)
+
+                # Write marker only after success.
+                marker.write_text("ok\n", encoding="utf-8")
+
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+
+    else:
+        start = time.time()
+        while not marker.exists():
+            if time.time() - start > timeout:
+                raise TimeoutError(f"Timed out waiting for dataset setup marker: {marker}")
+            time.sleep(1.0)
+
+    distributed_barrier()
+    return result
+
+def run_python_script_string(
+    script: str,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Run Python code stored as a string.
+
+    Args:
+        script: Python code as a string.
+        context: Variables to make available inside the script.
+
+    Returns:
+        The globals dictionary after execution.
+    """
+
+    exec_globals = {
+        "__name__": "__main__",
+    }
+
+    if context:
+        exec_globals.update(context)
+
+    exec(script, exec_globals)
+
+    return exec_globals
+
+def boxes_to_xyxy(
+    boxes,
+    box_format: str,
+    image_size=None,
+    normalized: bool = False,
+    clip: bool = False,
+):
+    """
+    Convert boxes to pixel xyxy format.
+
+    Args:
+        boxes:
+            Tensor-like of shape [N, 4].
+        box_format:
+            - "xyxy":   [x_min, y_min, x_max, y_max]
+            - "xywh":   [x_min, y_min, width, height]
+            - "cxcywh": [center_x, center_y, width, height]
+        image_size:
+            Optional (height, width). Required if normalized=True or clip=True.
+        normalized:
+            If True, input boxes are in [0, 1] and will be scaled to pixels.
+        clip:
+            If True, clip output xyxy boxes to image boundaries.
+
+    Returns:
+        Tensor of shape [N, 4] in pixel xyxy format.
+    """
+    boxes = torch.as_tensor(boxes)
+
+    if boxes.numel() == 0:
+        return boxes.reshape(-1, 4).float()
+
+    if boxes.ndim == 1:
+        boxes = boxes.unsqueeze(0)
+
+    if boxes.shape[-1] != 4:
+        raise ValueError(f"Expected boxes shape [N, 4], got {tuple(boxes.shape)}")
+
+    boxes = boxes.clone().float()
+
+    if normalized:
+        if image_size is None:
+            raise ValueError("image_size=(height, width) is required when normalized=True")
+
+        height, width = image_size
+        boxes[:, [0, 2]] *= float(width)
+        boxes[:, [1, 3]] *= float(height)
+
+    if box_format == "xyxy":
+        out = boxes
+
+    elif box_format == "xywh":
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        w = boxes[:, 2]
+        h = boxes[:, 3]
+
+        out = torch.stack(
+            [x1, y1, x1 + w, y1 + h],
+            dim=1,
+        )
+
+    elif box_format == "cxcywh":
+        cx = boxes[:, 0]
+        cy = boxes[:, 1]
+        w = boxes[:, 2]
+        h = boxes[:, 3]
+
+        out = torch.stack(
+            [
+                cx - 0.5 * w,
+                cy - 0.5 * h,
+                cx + 0.5 * w,
+                cy + 0.5 * h,
+            ],
+            dim=1,
+        )
+
+    else:
+        raise ValueError(
+            f"Unknown box_format={box_format}. Expected one of: 'xyxy', 'xywh', 'cxcywh'."
+        )
+
+    if clip:
+        if image_size is None:
+            raise ValueError("image_size=(height, width) is required when clip=True")
+
+        height, width = image_size
+        out[:, [0, 2]] = out[:, [0, 2]].clamp(0, float(width))
+        out[:, [1, 3]] = out[:, [1, 3]].clamp(0, float(height))
+
+    return out

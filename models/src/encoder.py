@@ -11,7 +11,8 @@ class YOLODataEncoder:
                  top_k_per_level=3,
                  center_radius=1.5,
                  allow_multi_level=True,
-                 debug=False,):
+                 debug=False,
+                 box_format="xyxy"):
 
         self.input_size = input_size
         self.classes = classes
@@ -22,6 +23,10 @@ class YOLODataEncoder:
         self.allow_multi_level = allow_multi_level
         self.grid_sizes = []
         self.grid_centers = self.get_all_centers()
+        assert box_format in ["xyxy", "xywh", "cxcywh"], (
+            f"format must be one of ['xyxy', 'xywh', 'cxcywh'], got {format}"
+        )
+        self.box_format = box_format
 
     def encode(self, boxes, classes, background_id=0):
         if boxes.shape[0] == 0 and classes.shape[0] == 0:
@@ -70,9 +75,6 @@ class YOLODataEncoder:
         chosen_boxes = []
 
         for cls_idx, cls_name in enumerate(self.classes):
-
-            if cls_name == "__background__":
-                continue
 
             # Get current class ID from comnined_tensor
             class_ids = torch.where(combined_tensor[:, 5].int() == cls_idx)[0]
@@ -137,6 +139,21 @@ class YOLODataEncoder:
 
         classes = torch.as_tensor(classes, dtype=torch.long, device=device)
 
+        if classes.ndim == 0:
+            classes = classes.unsqueeze(0)
+
+        assert classes.ndim == 1
+        assert boxes.shape[0] == classes.shape[0], (
+            f"boxes={boxes.shape}, classes={classes.shape}"
+        )
+
+        if classes.numel() > 0:
+            assert classes.min().item() >= 0
+            assert classes.max().item() < len(self.classes), (
+                f"Bad class ids: {classes.unique().tolist()}, "
+                f"num_classes={len(self.classes)}"
+            )
+
         num_cells = cell_centers.shape[0]
 
         assigned_box_ids = torch.full(
@@ -155,17 +172,12 @@ class YOLODataEncoder:
             return assigned_box_ids, assigned_classes
 
         # GT geometry
-        box_w = (boxes[:, 2] - boxes[:, 0]).clamp(min=1.0)
-        box_h = (boxes[:, 3] - boxes[:, 1]).clamp(min=1.0)
-        box_size = torch.sqrt(box_w * box_h)
+        boxes_cxcywh = self._boxes_to_cxcywh(boxes)
+        box_centers = boxes_cxcywh[:, :2]
+        box_w = boxes_cxcywh[:, 2].clamp(min=1.0)
+        box_h = boxes_cxcywh[:, 3].clamp(min=1.0)
 
-        box_centers = torch.stack(
-            [
-                (boxes[:, 0] + boxes[:, 2]) * 0.5,
-                (boxes[:, 1] + boxes[:, 3]) * 0.5,
-            ],
-            dim=1,
-        )
+        box_size = torch.sqrt(box_w * box_h)
 
         unique_strides = sorted([int(s.item()) for s in strides.unique()])
 
@@ -275,6 +287,83 @@ class YOLODataEncoder:
                 assigned_classes[chosen_indices] = classes[box_i]
                 assigned_cost[chosen_indices] = chosen_dist
 
+        # Repair pass goes here
+        for box_i in range(boxes.shape[0]):
+            if (assigned_box_ids == box_i).any():
+                continue
+
+            gt_ctr = box_centers[box_i]
+            gt_w = box_w[box_i]
+            gt_h = box_h[box_i]
+            gt_size = box_size[box_i]
+
+            allowed = allowed_strides_for_box(gt_w, gt_h, gt_size)
+
+            best_unassigned_idx = None
+            best_unassigned_cost = None
+
+            best_any_idx = None
+            best_any_cost = None
+
+            for stride in allowed:
+                level_mask = strides == stride
+
+                if not level_mask.any():
+                    continue
+
+                level_indices = torch.where(level_mask)[0]
+                level_centers = cell_centers[level_indices]
+
+                dist = torch.norm(level_centers - gt_ctr[None, :], dim=1) / float(stride)
+
+                # Best cell overall, even if already assigned.
+                closest_any_local = torch.argmin(dist)
+                candidate_any_idx = level_indices[closest_any_local]
+                candidate_any_cost = dist[closest_any_local]
+
+                if best_any_cost is None or candidate_any_cost < best_any_cost:
+                    best_any_cost = candidate_any_cost
+                    best_any_idx = candidate_any_idx
+
+                # Best currently unassigned cell.
+                unassigned_mask = assigned_box_ids[level_indices] < 0
+
+                if unassigned_mask.any():
+                    unassigned_indices = level_indices[unassigned_mask]
+                    unassigned_dist = dist[unassigned_mask]
+
+                    closest_unassigned_local = torch.argmin(unassigned_dist)
+                    candidate_unassigned_idx = unassigned_indices[closest_unassigned_local]
+                    candidate_unassigned_cost = unassigned_dist[closest_unassigned_local]
+
+                    if best_unassigned_cost is None or candidate_unassigned_cost < best_unassigned_cost:
+                        best_unassigned_cost = candidate_unassigned_cost
+                        best_unassigned_idx = candidate_unassigned_idx
+
+            # Prefer an unassigned cell. If impossible, overwrite the closest cell.
+            if best_unassigned_idx is not None:
+                chosen = best_unassigned_idx
+                cost = best_unassigned_cost
+            else:
+                chosen = best_any_idx
+                cost = best_any_cost
+
+            if chosen is not None:
+                assigned_box_ids[chosen] = box_i
+                assigned_classes[chosen] = classes[box_i]
+                assigned_cost[chosen] = cost
+
+            if self.debug:
+                num_zero = 0
+                for box_i in range(boxes.shape[0]):
+                    n = (assigned_box_ids == box_i).sum().item()
+                    if n == 0:
+                        num_zero += 1
+                    print(f"GT {box_i}: positives={n}")
+
+                if num_zero > 0:
+                    print(f"WARNING: {num_zero} GT boxes still have zero positives")
+
         return assigned_box_ids, assigned_classes
 
     def debug_positive_counts_by_stride(self, assigned_box_ids):
@@ -297,12 +386,39 @@ class YOLODataEncoder:
 
         return out
 
+    def _boxes_to_cxcywh(self, boxes):
+        if self.box_format == "xyxy":
+            wh = boxes[:, 2:] - boxes[:, :2]
+            ctr = boxes[:, :2] + 0.5 * wh
+
+        elif self.box_format == "xywh":
+            # boxes = [x_min, y_min, width, height]
+            wh = boxes[:, 2:]
+            ctr = torch.stack(
+                [
+                    boxes[:, 0] + 0.5 * boxes[:, 2],
+                    boxes[:, 1] + 0.5 * boxes[:, 3],
+                ],
+                dim=1,
+            )
+
+        elif self.box_format == "cxcywh":
+            ctr = boxes[:, :2]
+            wh = boxes[:, 2:]
+
+        else:
+            raise ValueError(f"Unknown format: {self.box_format}")
+
+        wh = wh.clamp(min=1e-6)
+        return torch.cat([ctr, wh], dim=1)
+
     def _encode_boxes(self, boxes, obj_mask):
         cell_centers = self.grid_centers[:, :2].to(boxes.device)
         strides = self.grid_centers[:, 4:5].to(boxes.device)
 
-        b_wh = boxes[:, 2:] - boxes[:, :2]
-        b_ctr = boxes[:, :2] + 0.5 * b_wh
+        boxes_cxcywh = self._boxes_to_cxcywh(boxes)
+        b_ctr = boxes_cxcywh[:, :2]
+        b_wh = boxes_cxcywh[:, 2:].clamp(min=1e-6)
 
         dxdy = (b_ctr - cell_centers) / strides
         dwdh = torch.log((b_wh / strides).clamp(min=1e-6))

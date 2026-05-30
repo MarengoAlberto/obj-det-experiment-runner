@@ -442,11 +442,35 @@ class YOLODetectionLoss(nn.Module):
     # ------------------------------------------------------------------
 
     def _decode_deltas_to_cxcywh(self, deltas, pos_mask, batch_size):
-        encoded_space = 4 + self.num_classes
-        # Tile grid_centers to match the flattened batch layout [B*N, 5]
-        gc_tiled = self.grid_centers.to(deltas.device).unsqueeze(0).expand(batch_size, -1, -1)
-        gc_tiled = gc_tiled.reshape(-1, encoded_space)
-        gc = gc_tiled[pos_mask]
+        """
+        Decode encoded bbox deltas into pixel cxcywh boxes for positive samples.
+
+        deltas:   [num_pos, 4]
+        pos_mask: [B * N] boolean mask over flattened predictions/targets
+        returns:  [num_pos, 4] as [cx, cy, w, h] in pixels
+        """
+        device = deltas.device
+
+        grid_centers = self.grid_centers.to(device)  # [N, 5]
+        n_cells = grid_centers.shape[0]
+        grid_dim = grid_centers.shape[1]  # should be 5
+
+        assert grid_dim == 5, f"Expected grid_centers shape [N, 5], got {grid_centers.shape}"
+        assert pos_mask.numel() == batch_size * n_cells, (
+            f"pos_mask has {pos_mask.numel()} elements, but expected "
+            f"{batch_size} * {n_cells} = {batch_size * n_cells}"
+        )
+        assert deltas.shape[-1] == 4, f"Expected deltas shape [num_pos, 4], got {deltas.shape}"
+
+        # Tile grid centers to match flattened batch layout: [B, N, 5] -> [B*N, 5]
+        gc_tiled = grid_centers.unsqueeze(0).expand(batch_size, -1, -1)
+        gc_tiled = gc_tiled.reshape(-1, grid_dim)
+
+        gc = gc_tiled[pos_mask]  # [num_pos, 5]
+
+        assert gc.shape[0] == deltas.shape[0], (
+            f"Selected {gc.shape[0]} grid centers but got {deltas.shape[0]} deltas"
+        )
 
         cell_centers = gc[:, :2]
         strides = gc[:, 4:5]
@@ -457,7 +481,7 @@ class YOLODetectionLoss(nn.Module):
         p_ctr = cell_centers + dxy * strides
         p_wh = dwh.clamp(min=-4.0, max=4.0).exp() * strides
 
-        return torch.cat([p_ctr, p_wh], dim=1)  # (cx, cy, w, h) in pixels
+        return torch.cat([p_ctr, p_wh], dim=1)  # [cx, cy, w, h] in pixels
 
     def _get_pos_strides(self, pos_mask, batch_size, device):
         """
