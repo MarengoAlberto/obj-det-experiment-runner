@@ -7,6 +7,7 @@ import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 
 from ..src import DataEncoder
+from .utils import is_main_process
 from .augmentations import get_augmentations
 
 class DataSetup:
@@ -222,7 +223,8 @@ def list_files_in_directory(directory_path):
         files = [entry for entry in entries if os.path.isfile(os.path.join(directory_path, entry))]
         return files
     except FileNotFoundError:
-        print(f"Error: Directory '{directory_path}' not found.")
+        if is_main_process():
+            print(f"Error: Directory '{directory_path}' not found.")
         return []
 
 
@@ -263,8 +265,8 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False, is_stand
             label.append(class_label)
         boxes.append(box)
         labels.append(label)
-
-    print(f"Total {num_samples} images and {len(boxes)} boxes loaded from: {os.path.relpath(data_path, os.getcwd())}")
+    if is_main_process():
+        print(f"Total {num_samples} images and {sum(len(image_boxes) for image_boxes in boxes)} boxes and {sum(len(image_label) for image_label in labels)} labels loaded from: {os.path.relpath(data_path, os.getcwd())}")
 
     # Shuffle or Sort
     if shuffle:
@@ -283,7 +285,8 @@ def load_groundtruths(data_path, train=True, shuffle=True, debug=False, is_stand
             num_samples = 100
         else:
             num_samples = 10
-        print(f"Debug mode enabled: Only using {num_samples} samples for set: {'train' if train else 'validation'}")
+        if is_main_process():
+            print(f"Debug mode enabled: Only using {num_samples} samples for set: {'train' if train else 'validation'}")
         image_paths = image_paths[:num_samples]
         boxes = boxes[:num_samples]
         labels = labels[:num_samples]

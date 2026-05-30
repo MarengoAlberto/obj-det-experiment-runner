@@ -11,6 +11,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .base_trainer import BaseTrainer
 from ..src import Loss
+from .. import utils
 from ..utils import DataSetup, OptimizerSetup, Metric, Wandb, initialize_directory, get_logger, boxes_to_xyxy
 
 class FPNTrainer(BaseTrainer):
@@ -53,22 +54,24 @@ class FPNTrainer(BaseTrainer):
         epochs = n_epochs or self.cfg.experiment.train.epochs
         if batch_size:
             self.cfg.experiment.train.batch_size = batch_size
+        if utils.is_main_process():
+            self.logger.info(f"Training Configuration: Epochs: {epochs}, Batch Size: {self.cfg.experiment.train.batch_size}")
 
-        self.logger.info(f"Training Configuration: Epochs: {epochs}, Batch Size: {self.cfg.experiment.train.batch_size}")
-
-        self.logger.info("Start training...")
+            self.logger.info("Start training...")
 
         # DATA LOADER Initialization
         data_class = DataSetup(self.cfg, self.data, self.data_encoder, self.use_ddp, self.rank, self.world_size)
         self.train_loader, self.val_loader, self.train_sampler, self.val_sampler = data_class.get_loaders(batch_size)
 
-        self.logger.info(f"Train Loader size: {len(self.train_loader.dataset)}, Val Loader size: {len(self.val_loader.dataset)}")
-        self.logger.info(f"Train Loader: {len(self.train_loader)}, Val Loader: {len(self.val_loader)}")
+        if utils.is_main_process():
+            self.logger.info(f"Train Loader size: {len(self.train_loader.dataset)}, Val Loader size: {len(self.val_loader.dataset)}")
+            self.logger.info(f"Train Loader: {len(self.train_loader)}, Val Loader: {len(self.val_loader)}")
 
         output_path = os.path.join(self.checkpoint_dir, "best_models")
         iterator = tqdm(range(start_epoch, epochs + start_epoch), dynamic_ncols=True)
 
-        self.logger.info(f"Saving checkpoint: {output_path}")
+        if utils.is_main_process():
+            self.logger.info(f"Saving checkpoint: {output_path}")
 
         if self.is_main_process(self.rank):
             if self.wandb:
@@ -157,32 +160,38 @@ class FPNTrainer(BaseTrainer):
             self.checkpoint_dir = Path(checkpoint_path)
             self.version = version
 
-        self.logger.info(f"Checkpoint Directory: {self.checkpoint_dir}")
-        self.logger.info(f"Version: {self.version}")
+        if utils.is_main_process():
+            self.logger.info(f"Checkpoint Directory: {self.checkpoint_dir}")
+            self.logger.info(f"Version: {self.version}")
 
         # MODEL setup for DDP
         self.model = self.model.to(self.device)
         if self.use_ddp:
             self.model = DDP(self.model, device_ids=[self.local_rank], output_device=self.local_rank, find_unused_parameters=True)
-            self.logger.info(f'DDP: {self.model}')
+            if utils.is_main_process():
+                self.logger.info(f'DDP: {self.model}')
 
         # OPTIMIZER Initialization
         optimizer_class = OptimizerSetup(self.cfg, model=self.model)
         self.optimizer, self.scheduler = optimizer_class.get_optimizer()
-        self.logger.info(f'Optimizer: {self.optimizer}, Scheduler: {self.scheduler}')
+        if utils.is_main_process():
+            self.logger.info(f'Optimizer: {self.optimizer}, Scheduler: {self.scheduler}')
 
         # LOSS Initialization
         self.criterion = Loss(self.cfg, self.data_encoder)
-        self.logger.info(f'Criterion: {self.criterion}')
+        if utils.is_main_process():
+            self.logger.info(f'Criterion: {self.criterion}')
 
         # METRIC Initialization
         self.metric = Metric(self.cfg, self.device)
-        self.logger.info(f'Metric: {self.metric}')
+        if utils.is_main_process():
+            self.logger.info(f'Metric: {self.metric}')
 
         # Initialize WandB
         if self.cfg.experiment.train.use_wandb:
             self.wandb = Wandb(self.cfg, self.logger, close_when_done=self.close_when_done)
-            self.logger.info("Initialized Weights & Biases for logging.")
+            if utils.is_main_process():
+                self.logger.info("Initialized Weights & Biases for logging.")
 
     def set_seed(self, seed: int):
         random.seed(seed)

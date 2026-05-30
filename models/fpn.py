@@ -29,21 +29,24 @@ class FPNModel(BaseModel):
             if load_model:
                 self.model, self.start_epoch = utils.load_model(self.model, cfg.model.metadata.best_model_folder, *args, **kwargs)
         except FileNotFoundError as e:
-            self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
-
-        self.logger.info(summary(self.model,
-                                 input_size=(1,) + tuple(cfg.model.image_size)[::-1],
-                                 row_settings=["var_names"]))
+            if utils.is_main_process():
+                self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
+        if utils.is_main_process():
+            self.logger.info(summary(self.model,
+                                     input_size=(1,) + tuple(cfg.model.image_size)[::-1],
+                                     row_settings=["var_names"]))
 
         self.height = cfg.model.image_size[0]
         self.width = cfg.model.image_size[1]
         self.transform = utils.get_inference_transforms(height=self.height, width=self.width, box_format=cfg.dataset.metadata.box_format)
         self.classes = cfg.dataset.names
-        self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
+        if utils.is_main_process():
+            self.logger.info(f"Classes: {self.classes}. On image size: {self.height}x{self.width}")
 
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"Using device: {self.device}")
+        if utils.is_main_process():
+            self.logger.info(f"Using device: {self.device}")
 
     def __call__(self, image_path, *args, **kwargs):
 
@@ -82,7 +85,8 @@ class FPNModel(BaseModel):
 
         # Check if data is already downloaded and preprocessed, if not, do it.
         needs_download, url, data_yaml = utils.check_data_exists(data)
-        self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
+        if utils.is_main_process():
+            self.logger.info(f"Data check - needs download: {needs_download}, url: {url}, data_yaml: {data_yaml}")
         if needs_download:
             if 'download' in data_yaml and url is None:
                 _ = utils.run_python_script_string_once(
@@ -92,7 +96,8 @@ class FPNModel(BaseModel):
                     },
                 )
             else:
-                self.logger.info(f"Downloading data from {url}")
+                if utils.is_main_process():
+                    self.logger.info(f"Downloading data from {url}")
                 utils.download_and_unzip_zip(url, data_dir)
 
         # Initialize Trainer

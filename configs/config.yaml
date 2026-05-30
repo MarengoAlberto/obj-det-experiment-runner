@@ -2,7 +2,7 @@ defaults:
   - model: yolo
   - optimizer: adamw
   - scheduler: cosine_warmup
-  - dataset: data
+  - dataset: VisDroneData
   - experiment: baseline
   - loss: yolo_loss
 #  - loss@loss.loc_loss: iou
