@@ -678,7 +678,7 @@ class YOLODetectionLoss(nn.Module):
             ) if pos_mask.any() else pred_obj.new_tensor(0.0)
 
             if self.apply_negative_mining:
-                hard_neg_mask = self._hard_negative_mining(pred_obj, neg_mask)
+                hard_neg_mask = self._hard_negative_mining(pred_obj, neg_mask, pos_mask=pos_mask)
                 active_neg = hard_neg_mask
             else:
                 active_neg = neg_mask
@@ -766,17 +766,21 @@ class YOLODetectionLoss(nn.Module):
     # Hard negative mining
     # ------------------------------------------------------------------
 
-    def _hard_negative_mining(self, pred_obj, neg_mask, topk_ratio=0.03, min_negatives=256):
+    def _hard_negative_mining(self, pred_obj, neg_mask, pos_mask=None, neg_pos_ratio=5, min_negatives=256):
         if not neg_mask.any():
             return neg_mask
 
         neg_scores = pred_obj[neg_mask].detach().sigmoid()
-        n_hard = min(max(min_negatives, int(topk_ratio * neg_scores.numel())),
-                     neg_scores.numel())
+        neg_indices = neg_mask.nonzero(as_tuple=False).squeeze(1)
 
-        _, hard_idx   = neg_scores.topk(n_hard)
+        if pos_mask is not None and pos_mask.any():
+            n_pos = int(pos_mask.sum().item())
+            n_hard = min(max(min_negatives, neg_pos_ratio * n_pos), neg_scores.numel())
+        else:
+            n_hard = min(min_negatives, neg_scores.numel())
+
+        _, hard_idx = neg_scores.topk(n_hard)
+
         hard_neg_mask = torch.zeros_like(neg_mask)
-        neg_indices   = neg_mask.nonzero(as_tuple=False).squeeze(1)
         hard_neg_mask[neg_indices[hard_idx]] = True
-
         return hard_neg_mask

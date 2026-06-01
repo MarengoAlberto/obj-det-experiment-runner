@@ -12,7 +12,7 @@ class YOLODataEncoder:
                  center_radius=1.5,
                  allow_multi_level=True,
                  debug=False,
-                 box_format="xyxy"):
+                 box_format="xyxy",):
 
         self.input_size = input_size
         self.classes = classes

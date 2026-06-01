@@ -7,7 +7,7 @@ import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 
 from ..src import DataEncoder
-from .utils import is_main_process
+from .utils import is_main_process, boxes_to_encoder_space
 from .augmentations import get_augmentations
 
 class DataSetup:
@@ -125,6 +125,7 @@ class DataSetup:
                 is_train=train,
                 debug=self.cfg.experiment.train.debug,
                 is_standard_folder_structure=is_standard_folder_structure,
+                box_normalized=self.cfg.dataset.metadata.box_normalized,
             )
         elif self.cfg.model.name == "yolo":
             dataset = YoloDataset(
@@ -136,6 +137,7 @@ class DataSetup:
                 is_train=train,
                 debug=self.cfg.experiment.train.debug,
                 is_standard_folder_structure=is_standard_folder_structure,
+                box_normalized=self.cfg.dataset.metadata.box_normalized,
             )
         else:
              raise ValueError(f"Unknown model_type: {self.cfg.model.name}")
@@ -152,6 +154,7 @@ class FPNDataset(Dataset):
         input_size=(300, 300, 3),
         debug=False,
         is_standard_folder_structure=True,
+        box_normalized=False,
     ):
         self.data_path = os.path.expanduser(data_path)
         self.classes = classes
@@ -159,6 +162,7 @@ class FPNDataset(Dataset):
         self.input_size = input_size
         self.is_train = is_train
         self.encoder = data_encoder
+        self.box_normalized = box_normalized
 
         self.image_paths, self.boxes, self.labels, self.num_samples = load_groundtruths(data_path,
                                                                                         train=is_train,
@@ -208,7 +212,14 @@ class FPNDataset(Dataset):
         # Generate Encoded bounding boxes and labels
         # ===========================================================
 
-        loc_target, cls_target = self.encoder.encode(transformed_boxes, transformed_labels)
+        boxes_for_encoder = boxes_to_encoder_space(
+            transformed_boxes,
+            box_format=self.encoder.box_format,
+            image_size=self.input_size[:2],  # after A.Resize, model image size
+            normalized=self.box_normalized,  # add this attribute from cfg.dataset.metadata.box_normalized
+        )
+
+        loc_target, cls_target = self.encoder.encode(boxes_for_encoder, transformed_labels)
 
         original_size = torch.tensor((height, width), dtype=torch.int)
 
@@ -380,11 +391,19 @@ class YoloDataset(FPNDataset):
 
         transformed_boxes = torch.tensor(transformed_boxes, dtype=torch.float)
         transformed_labels = torch.tensor(transformed_labels, dtype=torch.int)
+
+        boxes_for_encoder = boxes_to_encoder_space(
+            transformed_boxes,
+            box_format=self.encoder.box_format,
+            image_size=self.input_size[:2],  # after A.Resize, model image size
+            normalized=self.box_normalized,  # add this attribute from cfg.dataset.metadata.box_normalized
+        )
+
         if len(self.classes) == 1:
             transformed_labels = transformed_labels - 1
-            encoded = self.encoder.encode(transformed_boxes, transformed_labels, background_id=-1)
+            encoded = self.encoder.encode(boxes_for_encoder, transformed_labels, background_id=-1)
         else:
-            encoded = self.encoder.encode(transformed_boxes, transformed_labels)
+            encoded = self.encoder.encode(boxes_for_encoder, transformed_labels)
 
         original_size = torch.tensor((height, width), dtype=torch.int)
 

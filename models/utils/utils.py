@@ -801,3 +801,57 @@ def boxes_to_xyxy(
         out[:, [1, 3]] = out[:, [1, 3]].clamp(0, float(height))
 
     return out
+
+def boxes_to_encoder_space(
+    boxes,
+    box_format: str,
+    image_size: tuple[int, int],
+    normalized: bool,
+):
+    """
+    Convert boxes to the coordinate scale expected by YOLODataEncoder.
+
+    Important:
+      - This does NOT change the box format.
+      - It only changes normalized coordinates into pixel coordinates.
+      - Output format remains whatever `box_format` is.
+
+    Examples:
+      xyxy normalized   [x1, y1, x2, y2] -> pixel xyxy
+      xywh normalized   [x1, y1, w, h]   -> pixel xywh
+      cxcywh normalized [cx, cy, w, h]   -> pixel cxcywh
+
+    image_size = (height, width)
+    """
+    if box_format not in {"xyxy", "xywh", "cxcywh"}:
+        raise ValueError(
+            f"Unknown box_format={box_format}. "
+            "Expected one of: 'xyxy', 'xywh', 'cxcywh'."
+        )
+
+    boxes = torch.as_tensor(boxes, dtype=torch.float).clone()
+
+    if boxes.numel() == 0:
+        return boxes.reshape(-1, 4)
+
+    if boxes.ndim == 1:
+        boxes = boxes.unsqueeze(0)
+
+    if boxes.shape[-1] != 4:
+        raise ValueError(f"Expected boxes shape [N, 4], got {tuple(boxes.shape)}")
+
+    if not normalized:
+        return boxes
+
+    height, width = image_size
+
+    if height <= 0 or width <= 0:
+        raise ValueError(f"Invalid image_size={image_size}")
+
+    # This scaling is valid for xyxy, xywh, and cxcywh.
+    # Columns 0 and 2 are x/width-like values.
+    # Columns 1 and 3 are y/height-like values.
+    boxes[:, [0, 2]] *= float(width)
+    boxes[:, [1, 3]] *= float(height)
+
+    return boxes
