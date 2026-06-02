@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 import requests
 import zipfile
+from omegaconf import DictConfig, OmegaConf
 from typing import Union, cast, Any, Tuple
 from collections.abc import Mapping
 from pathlib import Path
@@ -581,9 +582,6 @@ def find_model_pth_paths(
 
     return root_matches
 
-from omegaconf import DictConfig, OmegaConf
-
-
 def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
     if 'nc' not in cfg_yaml.dataset:
         try:
@@ -595,10 +593,11 @@ def handle_yaml(cfg_yaml: DictConfig) -> DictConfig:
         names = OmegaConf.select(cfg_yaml, "dataset.names")
 
         if names is not None:
-            cfg_yaml.dataset.names = [
-                cls for cls in names
-                if cls != "__background__"
-            ]
+            if isinstance(names, list):
+                cfg_yaml.dataset.names = [
+                    cls for cls in names
+                    if cls != "__background__"
+                ]
             try:
                 cfg_yaml.dataset.nc = len(cfg_yaml.dataset.names)
             except :

@@ -36,6 +36,16 @@ python train.py optimizer.lr=0.0003 experiment.train.batch_size=128
 python train.py experiment=debug model=yolo_debug
 
 torchrun --standalone --nproc_per_node=2 train.py
+
+```
+
+### Zip/Unzip Model
+
+```bash
+tar -czvf <model_name>.tar.gz checkpoints/version_0/best_model/
+
+tar -xzvf <model_name>.tar.gz
+
 ```
 
 
