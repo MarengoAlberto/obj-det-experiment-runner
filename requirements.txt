@@ -14,3 +14,6 @@ pyyaml
 python-dotenv
 pandas
 ultralytics
+onnx
+onnxscript
+onnxruntime
