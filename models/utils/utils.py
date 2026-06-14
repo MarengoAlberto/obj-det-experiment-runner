@@ -141,11 +141,8 @@ def download_and_unzip_zip(url: str, extract_dir: str = 'dataset', zip_name: Uni
         except FileNotFoundError:
             pass
 
-def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
-
-    data_cfg = OmegaConf.load(yaml_path)
+def process_yaml(data_cfg: DictConfig, default_data_dir: str):
     data_dir = data_cfg.path if "path" in data_cfg else default_data_dir
-
     needs_download = True
     url = data_cfg.metadata.url if "url" in data_cfg.metadata else None
     train_folder = os.path.join(data_dir, data_cfg.train.replace('../', ''))
@@ -153,10 +150,10 @@ def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
     if 'test' in data_cfg:
         test_folder = os.path.join(data_dir, data_cfg.test.replace('../', ''))
     if (
-        os.path.isdir(train_folder)
-        and os.path.isdir(val_folder)
-        and bool(os.listdir(train_folder))
-        and bool(os.listdir(val_folder))
+            os.path.isdir(train_folder)
+            and os.path.isdir(val_folder)
+            and bool(os.listdir(train_folder))
+            and bool(os.listdir(val_folder))
     ):
         needs_download = False
     data_cfg.full_train_path = train_folder
@@ -164,6 +161,10 @@ def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
     if 'test' in data_cfg:
         data_cfg.full_test_path = test_folder
     return needs_download, url, data_cfg
+
+def check_data_exists(yaml_path: str, default_data_dir: str = 'dataset'):
+    data_cfg = OmegaConf.load(yaml_path)
+    return process_yaml(data_cfg, default_data_dir)
 
 def to_python_number(value):
     """Convert common tensor/NumPy scalar types to plain Python numbers."""

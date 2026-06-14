@@ -17,3 +17,4 @@ ultralytics
 onnx
 onnxscript
 onnxruntime
+openvino

@@ -30,8 +30,8 @@ def get_fastest_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
 
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
+    # if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    #     return torch.device("mps")
 
     return torch.device("cpu")
 
@@ -47,7 +47,10 @@ def run_model_evaluation(cfg, path_to_model: str):
     model = Model(cfg, model_name=model_name)
     model.device = get_fastest_device()
     print(f"Running evaluation on {model.device}")
-    return model.evaluate(cfg.dataset.val.replace('..', 'dataset'))
+    dataset = cfg.dataset
+    _, _, data_yaml = utils.process_yaml(dataset)
+    model.data_yaml = data_yaml
+    return model.evaluate('test' if 'test' in data_yaml else 'val')
 
 if __name__ == "__main__":
     pth_files = find_pth_files(model_root)

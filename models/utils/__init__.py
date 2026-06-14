@@ -7,6 +7,7 @@ from .metrics import Metric
 from .wandb import Wandb
 from .utils import (download_and_unzip_zip,
                     check_data_exists,
+                    process_yaml,
                     load_model,
                     load_model_yaml,
                     model_exists_in_csv,
