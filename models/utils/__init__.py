@@ -7,6 +7,7 @@ from .metrics import Metric
 from .wandb import Wandb
 from .utils import (download_and_unzip_zip,
                     check_data_exists,
+                    process_yaml,
                     load_model,
                     load_model_yaml,
                     model_exists_in_csv,
@@ -18,5 +19,8 @@ from .utils import (download_and_unzip_zip,
                     boxes_to_xyxy,
                     is_main_process,
                     distributed_barrier)
+from .onnx_utils import (is_cuda_available,
+                        compile_model,
+                        )
 from .coco_evaluate import coco_eval
 from .visualization import plot_predictions, draw_bbox

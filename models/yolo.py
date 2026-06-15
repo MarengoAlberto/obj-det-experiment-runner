@@ -22,8 +22,10 @@ class YOLO(FPNModel):
         if image_array.ndim == 3:
             image_array = image_array.unsqueeze(0)
         image_batch = image_array.to(loc_device)
-        self.model.eval()
-        self.model = self.model.to(loc_device)
+
+        if not self.optimized_cpu_inference:
+            self.model.eval()
+            self.model = self.model.to(loc_device)
 
         with torch.no_grad():
             logits = self.model(image_batch)
@@ -67,9 +69,16 @@ class YOLO(FPNModel):
             raise ValueError("Data yaml is not loaded. Please load data first.")
 
         data_class = utils.DataSetup(self.cfg, self.data_yaml, self.data_encoder)
-        loader = data_class.get_one_loader(batch_size, split_name=split_name)
+        drop_last = True if (self.optimized_cpu_inference and not utils.is_cuda_available()) else False
+        loader = data_class.get_one_loader(batch_size, split_name=split_name, drop_last=drop_last)
 
         iterator = tqdm(loader, dynamic_ncols=True)
+
+        if (self.optimized_cpu_inference and not utils.is_cuda_available() and not self.compiled_model):
+            self.model, self.compiled_model = utils.compile_model(self.full_model_path,
+                                                                  self.model,
+                                                                  (self.height, self.width),
+                                                                  batch_size,)
 
         preds = []
         true_labels = []

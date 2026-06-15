@@ -1,5 +1,6 @@
 import os
 import torch
+import argparse
 from pathlib import Path
 from omegaconf import OmegaConf
 
@@ -8,6 +9,22 @@ from models import Model, utils
 model_root = Path("trained_model")
 csv_path = Path("evaluation/experiment_results.csv")
 experiments_root = Path("experiments")
+optimized_cpu_inference = True
+
+def str_to_bool(value: str) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    value = value.lower()
+
+    if value in ("true", "1", "yes", "y"):
+        return True
+    elif value in ("false", "0", "no", "n"):
+        return False
+
+    raise argparse.ArgumentTypeError(
+        "optimized_cpu_inference must be a boolean: true/false, 1/0, yes/no"
+    )
 
 def find_pth_files(root_folder: str | Path) -> list[Path]:
     """
@@ -30,12 +47,12 @@ def get_fastest_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
 
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
+    # if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    #     return torch.device("mps")
 
     return torch.device("cpu")
 
-def run_model_evaluation(cfg, path_to_model: str):
+def run_model_evaluation(cfg, path_to_model: str, args: argparse.Namespace):
     cfg.model.metadata.best_model_folder = os.path.dirname(path_to_model)
     if OmegaConf.select(cfg, "model.attention_type") is not None:
         attention_type = cfg.model.attention_type
@@ -44,12 +61,32 @@ def run_model_evaluation(cfg, path_to_model: str):
         print("attention_type does not exist")
         cfg.model.attention_type = None
     model_name = os.path.splitext(os.path.basename(path_to_model))[0]
-    model = Model(cfg, model_name=model_name)
-    model.device = get_fastest_device()
-    print(f"Running evaluation on {model.device}")
-    return model.evaluate(cfg.dataset.val.replace('..', 'dataset'))
+    model = Model(cfg, model_name=model_name, optimized_cpu_inference=args.optimized_cpu_inference)
+    model.wrapper.device = get_fastest_device()
+    print(f"Running evaluation on {model.wrapper.device}")
+    dataset = cfg.dataset
+    _, _, data_yaml = utils.process_yaml(dataset, 'dataset')
+    model.wrapper.data_yaml = data_yaml
+    return model.evaluate('test' if 'test' in data_yaml else 'val', batch_size=args.batch_size)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        required=True,
+        help="Batch size for inference",
+    )
+
+    parser.add_argument(
+        "--optimized_cpu_inference",
+        type=str_to_bool,
+        required=True,
+        help="Whether to use optimized CPU inference",
+    )
+
+    args = parser.parse_args()
     pth_files = find_pth_files(model_root)
 
     for pth_file in pth_files:
@@ -68,7 +105,7 @@ if __name__ == "__main__":
             continue
 
         try:
-            map_results = run_model_evaluation(cfg, str(pth_file))
+            map_results = run_model_evaluation(cfg, str(pth_file), args)
         except Exception as e:
             print(f"Error evaluating model {model_name}: {e}")
             continue

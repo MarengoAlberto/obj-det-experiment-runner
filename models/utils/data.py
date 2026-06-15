@@ -74,7 +74,7 @@ class DataSetup:
 
         return train_loader, valid_loader, train_sampler, val_sampler
 
-    def get_one_loader(self, _batch_size, split_name='val'):
+    def get_one_loader(self, _batch_size, split_name='val', drop_last=False):
 
         batch_size = _batch_size if _batch_size else self.cfg.experiment.train.batch_size
 
@@ -105,6 +105,7 @@ class DataSetup:
             collate_fn=dataset.collate_fn,
             num_workers=num_workers,
             pin_memory=torch.cuda.is_available(),
+            drop_last=drop_last,
         )
 
         return loader
