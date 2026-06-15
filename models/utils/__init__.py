@@ -19,5 +19,8 @@ from .utils import (download_and_unzip_zip,
                     boxes_to_xyxy,
                     is_main_process,
                     distributed_barrier)
+from .onnx_utils import (is_cuda_available,
+                        compile_model,
+                        )
 from .coco_evaluate import coco_eval
 from .visualization import plot_predictions, draw_bbox

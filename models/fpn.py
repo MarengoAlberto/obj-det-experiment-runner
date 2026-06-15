@@ -13,6 +13,8 @@ class FPNModel(BaseModel):
 
     start_epoch = 0
     data_yaml = None
+    full_model_path = None
+    compiled_model = False
 
     def __init__(self, cfg, load_model=True, *args, **kwargs):
 
@@ -24,10 +26,13 @@ class FPNModel(BaseModel):
         # MODEL Initialization
         self.model, self.data_encoder = src.get_model(cfg)
         self.trainer_cls = get_trainer(cfg)
+        self.optimized_cpu_inference = kwargs.get('optimized_cpu_inference', False)
 
         try:
             if load_model:
-                self.model, self.start_epoch = utils.load_model(self.model, cfg.model.metadata.best_model_folder, *args, **kwargs)
+                self.model, self.full_model_path, self.start_epoch = utils.load_model(self.model,
+                                                                                      cfg.model.metadata.best_model_folder,
+                                                                                      *args, **kwargs)
         except FileNotFoundError as e:
             if utils.is_main_process():
                 self.logger.warning(f"Best model not found at {cfg.model.metadata.best_model_folder} - ERROR: {e}. Starting with a new model.")
@@ -49,6 +54,11 @@ class FPNModel(BaseModel):
             self.logger.info(f"Using device: {self.device}")
 
     def __call__(self, image_path, *args, **kwargs):
+
+        if (self.optimized_cpu_inference and not utils.is_cuda_available() and not self.compiled_model):
+            self.model, self.compiled_model = utils.compile_model(self.full_model_path,
+                                                                  self.model,
+                                                                  (self.height, self.width),)
 
         orig_image = cv2.imread(image_path)[..., ::-1]
         orig_image_cpy = orig_image.copy()

@@ -29,7 +29,7 @@ def load_model(model, model_folder: str, *args, **kwargs):
     except:
         model.load_state_dict(torch.load(path, map_location=device))
         start_epoch = 0
-    return model.to(device), start_epoch
+    return model.to(device), path, start_epoch
 
 def _direct_download_url(url: str) -> str:
     # Turn a Dropbox share link into a direct download URL
