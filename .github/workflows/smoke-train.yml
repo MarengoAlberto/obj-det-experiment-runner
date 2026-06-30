@@ -1,0 +1,35 @@
+# .github/workflows/smoke-train.yml
+name: Smoke train
+
+on:
+  pull_request:
+    branches: [prod]
+    paths:
+      - "train.py"
+      - "models/**"
+      - "configs/**"
+      - "requirements.txt"
+      - ".github/workflows/smoke-train.yml"
+
+jobs:
+  smoke-train:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out PR code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run debug training
+        run: |
+          python -u train.py experiment=debug model=yolo_debug

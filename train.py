@@ -1,4 +1,5 @@
 import hydra
+from pathlib import Path
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
@@ -9,7 +10,11 @@ def main(cfg: DictConfig):
     model = Model(cfg, load_model=False)
     choices = HydraConfig.get().runtime.choices
     dataset_name = choices["dataset"]
+
     dataset_yaml_path = f"configs/dataset/{dataset_name}.yaml"
+
+    print(dataset_yaml_path)
+
     history = model.train(data=dataset_yaml_path,
                           n_epochs=cfg.experiment.train.epochs,
                           batch_size=cfg.experiment.train.batch_size)

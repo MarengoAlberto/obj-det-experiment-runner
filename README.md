@@ -48,4 +48,12 @@ tar -xzvf <model_name>.tar.gz
 
 ```
 
+### Lanch RunPod Jobs
+
+```bash
+chmod +x launch_experiment.sh
+
+./launch_experiment.sh yolo640_attention_seed1
+```
+
 
